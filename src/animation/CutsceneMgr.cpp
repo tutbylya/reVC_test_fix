@@ -132,7 +132,6 @@ uint32 CCutsceneMgr::ms_cutsceneLoadStatus;
 bool CCutsceneMgr::ms_useCutsceneShadows = true;
 bool CCutsceneMgr::ms_waitingForAudioAfterWindowPause;
 bool CCutsceneMgr::ms_cutsceneAudioResumeRequested;
-bool CCutsceneMgr::ms_cutsceneAudioSyncUnavailable;
 uint8 CCutsceneMgr::ms_cutsceneAudioResumeFrames;
 
 bool bCamLoaded;
@@ -171,7 +170,6 @@ CCutsceneMgr::Initialise(void)
 	ms_cutsceneProcessing = false;
 	ms_waitingForAudioAfterWindowPause = false;
 	ms_cutsceneAudioResumeRequested = false;
-	ms_cutsceneAudioSyncUnavailable = false;
 	ms_cutsceneAudioResumeFrames = 0;
 
 	ms_pCutsceneDir = new CDirectory(CUTSCENEDIRSIZE);
@@ -199,7 +197,6 @@ CCutsceneMgr::LoadCutsceneData(const char *szCutsceneName)
 	ms_wasCutsceneSkipped = false;
 	ms_waitingForAudioAfterWindowPause = false;
 	ms_cutsceneAudioResumeRequested = false;
-	ms_cutsceneAudioSyncUnavailable = false;
 	ms_cutsceneAudioResumeFrames = 0;
 	CTimer::Suspend();
 	if (!bIsEverythingRemovedFromTheWorldForTheBiggestFuckoffCutsceneEver)
@@ -468,7 +465,6 @@ CCutsceneMgr::DeleteCutsceneData(void)
 	ms_loaded = false;
 	ms_waitingForAudioAfterWindowPause = false;
 	ms_cutsceneAudioResumeRequested = false;
-	ms_cutsceneAudioSyncUnavailable = false;
 	ms_cutsceneAudioResumeFrames = 0;
 
 	FindPlayerPed()->bIsVisible = true;
@@ -521,7 +517,6 @@ CCutsceneMgr::RecordWindowPause(void)
 
 	ms_waitingForAudioAfterWindowPause = true;
 	ms_cutsceneAudioResumeRequested = false;
-	ms_cutsceneAudioSyncUnavailable = false;
 	ms_cutsceneAudioResumeFrames = 0;
 }
 
@@ -561,12 +556,12 @@ CCutsceneMgr::Update(void)
 
 	if (!ms_running) return;
 
-	const bool hasSynchronizedAudio = bCamLoaded
-		&& CGeneral::faststricmp(ms_cutsceneName, "finale")
-		&& FindCutsceneAudioTrackId(ms_cutsceneName) != -1;
-
 	if (ms_waitingForAudioAfterWindowPause) {
-		if (!hasSynchronizedAudio) {
+		const bool hasCutsceneAudio = bCamLoaded
+			&& CGeneral::faststricmp(ms_cutsceneName, "finale")
+			&& FindCutsceneAudioTrackId(ms_cutsceneName) != -1;
+
+		if (!hasCutsceneAudio) {
 			ms_waitingForAudioAfterWindowPause = false;
 		} else {
 			if (!ms_cutsceneAudioResumeRequested) {
@@ -582,26 +577,16 @@ CCutsceneMgr::Update(void)
 			} else {
 				// A missing device/stream must not leave the cutscene stuck forever.
 				ms_waitingForAudioAfterWindowPause = false;
-				ms_cutsceneAudioSyncUnavailable = true;
 			}
 		}
 	}
 
-	bool synchronizedToAudio = false;
-	if (hasSynchronizedAudio && !ms_cutsceneAudioSyncUnavailable && DMAudio.IsCutSceneMusicPlaying()) {
-		int32 position = DMAudio.GetCutSceneMusicPosition();
-		uint32 finishTime = TheCamera.GetCutSceneFinishTime();
-		if (position >= 0 && finishTime > 0) {
-			if (position > (int32)finishTime)
-				position = finishTime;
-			TheCamera.SetPercentAlongCutScene((float)position / (float)finishTime * 100.0f);
-			ms_cutsceneTimer = position * 0.001f;
-			synchronizedToAudio = true;
-		}
-	}
-
-	if (!synchronizedToAudio)
-		ms_cutsceneTimer += CTimer::GetTimeStepNonClippedInSeconds();
+	// Keep the visual timeline on the frame timer. Stream positions are buffered
+	// snapshots and may stay unchanged (or briefly move backwards) across frames;
+	// forcing the spline to that value every frame makes the camera stop and jump.
+	// Window pause freezes both clocks, and the wait above only ensures that the
+	// audio stream is running again before the cutscene continues.
+	ms_cutsceneTimer += CTimer::GetTimeStepNonClippedInSeconds();
 
 	for (int i = 0; i < ms_numCutsceneObjs; i++) {
 		int modelId = ms_pCutsceneObjects[i]->GetModelIndex();
