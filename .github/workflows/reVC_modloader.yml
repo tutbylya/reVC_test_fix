@@ -40,6 +40,10 @@ jobs:
         shell: pwsh
         run: ./utils/modloader/test-source-patch.ps1 -SourceRepository build/modloader-upstream
 
+      - name: Test generated solution configuration selection
+        shell: pwsh
+        run: ./utils/modloader/test-solution-configuration.ps1
+
       - name: Build and package native reVC Mod Loader
         shell: pwsh
         run: ./utils/modloader/build.ps1 -Architecture '${{ matrix.architecture }}' -Jobs 2

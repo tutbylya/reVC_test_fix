@@ -28,6 +28,7 @@ BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
 
 #include "legacy_asi_loader.h"
 #include "legacy_asi_memory.h"
+#include "canonical_test_arena.h"
 
 #include <cstdio>
 #include <cwchar>
@@ -186,6 +187,13 @@ int wmain(int argc, wchar_t** argv)
     const bool expectedSuccess = std::wcscmp(argv[2], L"1") == 0;
     const unsigned expectedCount = static_cast<unsigned>(std::wcstoul(argv[3], nullptr, 10));
     const bool expectedExecution = std::wcscmp(argv[4], L"1") == 0;
+    // The dedicated test PE owns .compat before Windows allocates the CRT's
+    // stacks/heaps. Do not race those allocations with a later VirtualAlloc.
+    // Preflight-only cases still do not initialize or execute an ABI facade.
+    if (expectedExecution && !AdoptCanonicalTestArena()) {
+        std::fprintf(stderr, "Cannot adopt the canonical test image (Windows: %lu). No ASI was executed.\n", GetLastError());
+        return 1;
+    }
     const bool completed = Run(argv[1], expectedSuccess, expectedCount, expectedExecution);
     std::printf("Loader case: %u checks, %u failures.\n", checks, failures);
     return completed ? 0 : 1;

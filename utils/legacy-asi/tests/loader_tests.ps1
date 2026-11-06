@@ -4,7 +4,7 @@ param([switch]$Run)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $taskRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..\..')).Path
-$taskOutput = Join-Path $taskRoot 'build\legacy-asi-tests'
+$taskOutput = Join-Path $taskRoot ('build\legacy-asi-tests\loader-build-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path (Join-Path $taskOutput 'loader-objects') | Out-Null
 
 $taskVsWhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
@@ -17,14 +17,15 @@ Push-Location -LiteralPath $taskRoot
 try {
     # Use a child developer environment; do not mutate the caller's PATH or
     # generate/overwrite the game's normal solution or binaries.
-    # Only the tiny pre-CRT entry TU omits cookie/JMC instrumentation; normal
-    # host, memory and loader code retain compiler defaults and ASLR stays on.
+    # The opt-in canonical test PE owns the ABI range before Windows startup
+    # allocations, exactly like the production bootstrap. Normal CRT entry and
+    # compiler protections remain enabled; no OS mitigation policy is changed.
     $taskCompileSteps = @(
         ('call "{0}" >nul' -f $taskVcVars)
-        'call utils\legacy-asi\tests\build-and-test.cmd'
-        'cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /MT /GS- /JMC- /DREVC_LEGACY_ASI /DREVC_LEGACY_ASI_WCONSOLE_ENTRY /c src\extras\legacy_asi_entry.cpp /Fobuild\legacy-asi-tests\loader-objects\legacy_asi_entry.obj'
-        'cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /MT /DREVC_LEGACY_ASI /Isrc\extras utils\legacy-asi\tests\loader_tests.cpp src\extras\legacy_asi_memory.cpp src\extras\legacy_asi_loader.cpp src\extras\legacy_asi_identity.cpp build\legacy-asi-tests\loader-objects\legacy_asi_entry.obj /Fobuild\legacy-asi-tests\loader-objects\ /Febuild\legacy-asi-tests\loader_tests.exe /link /BASE:0x20000000 /DYNAMICBASE /FIXED:NO /ENTRY:LegacyAsiEntry'
-        'cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /MT /LD /DLOADER_FAILURE_FIXTURE utils\legacy-asi\tests\loader_tests.cpp /Fobuild\legacy-asi-tests\loader-objects\loader_failure.obj /Febuild\legacy-asi-tests\loader_failure.asi /link /IMPLIB:build\legacy-asi-tests\loader_failure.lib'
+        ('cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /MT /DREVC_LEGACY_ASI /DREVC_LEGACY_ASI_CORE_DLL /Isrc\extras utils\legacy-asi\tests\loader_tests.cpp utils\legacy-asi\tests\canonical_test_arena.cpp src\extras\legacy_asi_memory.cpp src\extras\legacy_asi_entry.cpp src\extras\legacy_asi_loader.cpp src\extras\legacy_asi_identity.cpp /Fo"{0}\loader-objects\\" /Fe"{0}\loader_tests.exe" /link /BASE:0x400000 /FIXED /DYNAMICBASE:NO /INCREMENTAL:NO /SUBSYSTEM:CONSOLE' -f $taskOutput)
+        ('cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /MT /LD /DFIXTURE_ID=1 utils\legacy-asi\tests\fixture.cpp /Fo"{0}\loader-objects\fixture_one.obj" /Fe"{0}\fixture_one.asi" /link /IMPLIB:"{0}\fixture_one.lib"' -f $taskOutput)
+        ('cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /MT /LD /DFIXTURE_ID=2 utils\legacy-asi\tests\fixture.cpp /Fo"{0}\loader-objects\fixture_two.obj" /Fe"{0}\fixture_two.asi" /link /IMPLIB:"{0}\fixture_two.lib"' -f $taskOutput)
+        ('cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /MT /LD /DLOADER_FAILURE_FIXTURE utils\legacy-asi\tests\loader_tests.cpp /Fo"{0}\loader-objects\loader_failure.obj" /Fe"{0}\loader_failure.asi" /link /IMPLIB:"{0}\loader_failure.lib"' -f $taskOutput)
     )
     $taskCompile = $taskCompileSteps -join ' && '
     & $env:ComSpec /d /c $taskCompile

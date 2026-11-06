@@ -10,18 +10,21 @@ call "%TASK_VSINSTALL%\VC\Auxiliary\Build\vcvars32.bat" >nul
 if errorlevel 1 goto failed
 :tools_ready
 if /i not "%VSCMD_ARG_TGT_ARCH%"=="x86" goto wrong_arch
-if not exist "build\legacy-asi-tests" mkdir "build\legacy-asi-tests"
+set "TASK_LEGACY_TEST_OUT=build\legacy-asi-tests"
+if defined REVC_LEGACY_TEST_OUTPUT set "TASK_LEGACY_TEST_OUT=%REVC_LEGACY_TEST_OUTPUT%"
+if not exist "%TASK_LEGACY_TEST_OUT%" mkdir "%TASK_LEGACY_TEST_OUT%"
 if errorlevel 1 goto failed
-cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /MT /LD /DFIXTURE_ID=1 utils\legacy-asi\tests\fixture.cpp /Fobuild\legacy-asi-tests\fixture_one.obj /Febuild\legacy-asi-tests\fixture_one.asi /link /IMPLIB:build\legacy-asi-tests\fixture_one.lib
+cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /MT /LD /DFIXTURE_ID=1 utils\legacy-asi\tests\fixture.cpp /Fo"%TASK_LEGACY_TEST_OUT%\fixture_one.obj" /Fe"%TASK_LEGACY_TEST_OUT%\fixture_one.asi" /link /IMPLIB:"%TASK_LEGACY_TEST_OUT%\fixture_one.lib"
 if errorlevel 1 goto failed
-cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /MT /LD /DFIXTURE_ID=2 utils\legacy-asi\tests\fixture.cpp /Fobuild\legacy-asi-tests\fixture_two.obj /Febuild\legacy-asi-tests\fixture_two.asi /link /IMPLIB:build\legacy-asi-tests\fixture_two.lib
+cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /MT /LD /DFIXTURE_ID=2 utils\legacy-asi\tests\fixture.cpp /Fo"%TASK_LEGACY_TEST_OUT%\fixture_two.obj" /Fe"%TASK_LEGACY_TEST_OUT%\fixture_two.asi" /link /IMPLIB:"%TASK_LEGACY_TEST_OUT%\fixture_two.lib"
 if errorlevel 1 goto failed
-cl /nologo /c /utf-8 /std:c++20 /W4 /WX /MT /GS- /JMC- /DREVC_LEGACY_ASI /DREVC_LEGACY_ASI_CONSOLE_ENTRY src\extras\legacy_asi_entry.cpp /Fobuild\legacy-asi-tests\legacy_asi_entry.obj
-if errorlevel 1 goto failed
-cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /MT /DREVC_LEGACY_ASI /Isrc\extras utils\legacy-asi\tests\memory_tests.cpp src\extras\legacy_asi_memory.cpp build\legacy-asi-tests\legacy_asi_entry.obj /Fobuild\legacy-asi-tests\ /Febuild\legacy-asi-tests\memory_tests.exe /link /BASE:0x20000000 /DYNAMICBASE /FIXED:NO /SUBSYSTEM:CONSOLE /ENTRY:LegacyAsiEntry
+rem The image owns .compat before Windows allocates heaps/stacks. This is the
+rem production canonical-image model, not a retry of a failed private arena.
+rem CORE_DLL suppresses the obsolete private pre-CRT entry; use normal main CRT.
+cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /MT /DREVC_LEGACY_ASI /DREVC_LEGACY_ASI_CORE_DLL /Isrc\extras utils\legacy-asi\tests\memory_tests.cpp utils\legacy-asi\tests\canonical_test_arena.cpp src\extras\legacy_asi_memory.cpp src\extras\legacy_asi_entry.cpp /Fo"%TASK_LEGACY_TEST_OUT%\\" /Fe"%TASK_LEGACY_TEST_OUT%\memory_tests.exe" /link /BASE:0x400000 /FIXED /DYNAMICBASE:NO /INCREMENTAL:NO /SUBSYSTEM:CONSOLE /IMPLIB:"%TASK_LEGACY_TEST_OUT%\memory_tests.lib"
 if errorlevel 1 goto failed
 if /i "%~1"=="--run" (
-    build\legacy-asi-tests\memory_tests.exe
+    "%TASK_LEGACY_TEST_OUT%\memory_tests.exe"
     if errorlevel 1 goto failed
 ) else (
     echo Built only. Pass --run to execute the local regression fixtures.

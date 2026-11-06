@@ -4,6 +4,8 @@
 #include <windows.h>
 #include "legacy_asi_memory.h"
 #include "legacy_asi_entry.h"
+#include "legacy_asi_arena_protocol.h"
+#include "canonical_test_arena.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -44,11 +46,21 @@ bool HasProtection(std::uintptr_t address, DWORD protection)
         info.State == MEM_COMMIT && (info.Protect & 0xFF) == protection;
 }
 
-bool IsReservedInaccessible(std::uintptr_t address)
+bool IsInaccessibleImagePage(std::uintptr_t address)
 {
     MEMORY_BASIC_INFORMATION info = {};
     return VirtualQuery(reinterpret_cast<void*>(address), &info, sizeof(info)) &&
-        info.State == MEM_RESERVE && info.AllocationProtect == PAGE_NOACCESS;
+        info.AllocationBase == reinterpret_cast<void*>(LegacyAsi::MemoryBegin) &&
+        info.Type == MEM_IMAGE && info.State == MEM_COMMIT &&
+        (info.Protect & 0xFF) == PAGE_NOACCESS;
+}
+
+bool IsOwnedImage(std::uintptr_t address)
+{
+    MEMORY_BASIC_INFORMATION info = {};
+    return VirtualQuery(reinterpret_cast<void*>(address), &info, sizeof(info)) &&
+        info.AllocationBase == reinterpret_cast<void*>(LegacyAsi::MemoryBegin) &&
+        info.Type == MEM_IMAGE && info.State == MEM_COMMIT;
 }
 
 std::wstring FixturePath(const wchar_t* filename)
@@ -158,46 +170,48 @@ bool RunTests()
     PROCESS_MITIGATION_ASLR_POLICY aslr = {};
     GetProcessMitigationPolicy(GetCurrentProcess(), ProcessASLRPolicy, &aslr, sizeof(aslr));
     Check(ModuleIsX86(host), "test process PE is x86");
-    // Enforced system ASLR may legitimately ignore the preferred high base.
-    // Never disable that policy: require only the space our facade actually needs.
-    Check(hostEnd <= MemoryBegin || hostBegin >= MemoryEnd, "test image does not occupy original VC addresses");
+    Check(hostBegin == MemoryBegin && hostEnd >= MemoryEnd,
+          "canonical test image owns the original VC addresses before CRT startup");
+    Check(!AdoptCoreReservation(nullptr, LegacyAsiLaunch::CapabilityCanonicalImage),
+          "null canonical ownership is rejected");
+    Check(!AdoptCoreReservation(host, 0) &&
+          !AdoptCoreReservation(host, LegacyAsiLaunch::CapabilityCanonicalImage | 0x80000000UL),
+          "missing or unknown canonical capabilities are rejected");
+    if (!AdoptCanonicalTestArena()) {
+        Check(false, "adopt the source-owned canonical image");
+        return false;
+    }
+    Check(!AdoptCanonicalTestArena(), "canonical ownership handoff is one-shot");
     if (!InitializeMemory()) {
-        Check(false, "adopt the reservation made before CRT startup");
+        Check(false, "initialize the source-owned canonical image facade");
         PrintOccupiedOriginalRanges();
         return false;
     }
-    Check(IsReservedInaccessible(MemoryBegin), "pre-CRT reservation remains inaccessible on adoption");
+    Check(UsesCanonicalImage(), "test uses the production canonical image facade");
+    Check(IsOwnedImage(MemoryBegin) && dos->e_magic == IMAGE_DOS_SIGNATURE,
+          "adoption preserves the native image and its headers");
     void* duplicateEarly = nullptr;
     unsigned long duplicateError = 0;
     Check(AcquireEarlyReservation(duplicateEarly, duplicateError) == EarlyReservationResult::AlreadyAcquired &&
-          duplicateEarly == nullptr, "pre-CRT reservation cannot acquire a second owner");
-    ReleaseMemory(); // No ASI has been loaded; allow the owned-collision regression below.
+          duplicateEarly == nullptr, "canonical reservation cannot acquire a second owner");
+    // The canonical image is the collision owner. Never unmap it to make a test
+    // pass or reserve a private allocation over its native sections.
     void* collision = VirtualAlloc(reinterpret_cast<void*>(MemoryBegin), 0x10000, MEM_RESERVE, PAGE_NOACCESS);
-    Check(collision == reinterpret_cast<void*>(MemoryBegin), "create owned address collision");
-    if (!collision) return false;
-    Check(!InitializeMemory(), "address collision fails closed");
-    MEMORY_BASIC_INFORMATION info = {};
-    Check(VirtualQuery(collision, &info, sizeof(info)) && info.AllocationBase == collision && info.State == MEM_RESERVE,
-          "collision owner allocation was not replaced");
-    Check(VirtualFree(collision, 0, MEM_RELEASE) != FALSE, "release owned collision");
-    if (!InitializeMemory()) {
-        Check(false, "reserve exact original address range");
-        PrintOccupiedOriginalRanges();
-        return false;
-    }
-    // Logging may allocate CRT buffers; do it after reserving fixed ABI pages.
-    std::printf("Test host actual image: %p..%p; preferred base: 0x20000000.\n", host, reinterpret_cast<void*>(hostEnd));
+    Check(collision == nullptr, "a private reservation cannot replace the owned canonical image");
+    Check(IsOwnedImage(MemoryBegin) && dos->e_magic == IMAGE_DOS_SIGNATURE,
+          "collision rejection preserves the image owner and native headers");
+    std::printf("Test host actual image: %p..%p; canonical base: 0x400000.\n", host, reinterpret_cast<void*>(hostEnd));
     std::printf("Process ASLR: force-relocate=%u, reject-stripped=%u, bottom-up=%u.\n",
                 aslr.EnableForceRelocateImages, aslr.DisallowStrippedImages, aslr.EnableBottomUpRandomization);
     Check(!InitializeMemory(), "duplicate initialization rejected");
-    Check(IsReservedInaccessible(MemoryBegin), "unmapped first page is inaccessible");
-    Check(IsReservedInaccessible(0x00500000), "unknown code page is inaccessible");
+    Check(IsOwnedImage(MemoryBegin), "duplicate initialization preserves native image ownership");
     const std::uint32_t signature = 0x53E58955;
     float scale = 1.0f;
     Check(!MapMutableData(TimeScale, &scale, 0), "empty mapping rejected");
     Check(!MapMutableData(MemoryBegin - 1, &scale, sizeof(scale)), "below-range mapping rejected");
     Check(!MapMutableData(MemoryEnd - 1, &scale, sizeof(scale)), "end-crossing mapping rejected");
     Check(!MapMutableData(MemoryBegin, &scale, (std::numeric_limits<std::size_t>::max)()), "wrapping mapping rejected");
+    Check(!MapMutableData(MemoryBegin, &scale, sizeof(scale)), "mapping cannot overwrite native PE headers");
     Check(!MapMutableData(TimeScale, nullptr, sizeof(scale)), "null source rejected");
     Check(MapReadOnlyData(Signature, &signature, sizeof(signature)), "map original version signature");
     Check(MapMutableData(TimeScale, &scale, sizeof(scale)), "map original timer scalar");
@@ -226,7 +240,9 @@ bool RunTests()
     Check(HasProtection(TimeScale, PAGE_READWRITE), "timer finalized read-write and not executable");
     Check(HasProtection(GameProcessCall, PAGE_EXECUTE_READ), "event finalized executable and not writable");
     Check(HasProtection(Function, PAGE_EXECUTE_READ), "function finalized executable and not writable");
-    Check(IsReservedInaccessible(0x00500000), "unknown page remained inaccessible after finalization");
+    Check(IsInaccessibleImagePage(0x00500000), "unknown compatibility page finalized inaccessible");
+    Check(IsOwnedImage(MemoryBegin) && dos->e_magic == IMAGE_DOS_SIGNATURE && nt->Signature == IMAGE_NT_SIGNATURE,
+          "finalization preserves native image metadata outside .compat");
     Check(*static_cast<const std::uint32_t*>(ReadMemory(Signature, sizeof(signature))) == signature,
           "original version signature retained");
     const unsigned char* event = static_cast<const unsigned char*>(ReadMemory(GameProcessCall, 6));
@@ -248,8 +264,13 @@ bool RunTests()
     if (!TestFixtures()) return false; // Keep memory alive if DLL unload failed.
     ReleaseMemory(); // All locally built ASIs have been unloaded above.
     Check(ReadMemory(TimeScale, sizeof(scale)) == nullptr, "released memory no longer exposed");
-    Check(InitializeMemory(), "facade can initialize again after full teardown");
-    ReleaseMemory();
+    Check(IsOwnedImage(MemoryBegin) && dos->e_magic == IMAGE_DOS_SIGNATURE && nt->Signature == IMAGE_NT_SIGNATURE,
+          "release does not free or overwrite the canonical image");
+    Check(IsInaccessibleImagePage(TimeScale) && IsInaccessibleImagePage(GameProcessCall),
+          "release clears and protects previously registered image pages");
+    Check(!InitializeMemory(), "released one-shot image ownership cannot become a private arena");
+    Check(IsOwnedImage(MemoryBegin) && dos->e_magic == IMAGE_DOS_SIGNATURE,
+          "failed reinitialization preserves the canonical collision owner");
     return true;
 }
 } // namespace

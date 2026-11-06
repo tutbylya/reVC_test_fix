@@ -128,6 +128,8 @@ if ($PrepareOnly) {
     return
 }
 
+. (Join-Path $PSScriptRoot 'solution-configuration.ps1')
+
 $mappedDrive = $null
 $buildTool = $null
 try {
@@ -148,7 +150,16 @@ try {
         try {
             Invoke-Checked $premake @('--file=revc-test-fix.premake.lua', 'vs2022')
             foreach ($arch in $architectures) {
-                Invoke-Checked $buildTool @('build-revc/modloader-revc.sln', "/m:$Jobs", '/nologo', '/verbosity:minimal', '/p:Configuration=Release', "/p:Platform=$arch")
+                $solution = 'build-revc/modloader-revc.sln'
+                $selection = Get-ModLoaderSolutionConfiguration -SolutionText ([IO.File]::ReadAllText((Join-Path (Get-Location).Path $solution))) -Architecture $arch
+                Write-Output "Building Mod Loader $arch using generated solution configuration $($selection.Pair)"
+                $propertiesFile = [IO.Path]::GetTempFileName()
+                try {
+                    Write-ModLoaderBuildProperties -Path $propertiesFile -Configuration $selection
+                    Invoke-Checked $buildTool @($solution, "/m:$Jobs", '/nologo', '/verbosity:minimal', "@$propertiesFile")
+                } finally {
+                    Remove-Item -LiteralPath $propertiesFile -ErrorAction Stop
+                }
             }
         } finally { Pop-Location }
     }

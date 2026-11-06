@@ -63,18 +63,47 @@ jobs:
         with:
           vs-version: '[17.0,18.0)'
       - name: Test local fixed-address fixtures, not external mods
+        timeout-minutes: 5
         shell: cmd
         run: utils\legacy-asi\tests\build-and-test.cmd --run
       - name: Test manifest loading in isolated processes
+        timeout-minutes: 5
         shell: pwsh
         run: ./utils/legacy-asi/tests/loader_tests.ps1 -Run
-      - name: Test owned-child launcher and normal-loader TLS identity
+      - name: Compile optional private-arena launcher fixtures
         shell: cmd
-        run: utils\legacy-asi\launcher\build-and-probe.cmd --run
+        run: utils\legacy-asi\launcher\build-and-probe.cmd
       - name: Compile canonical-image Wine probe (own source only)
-        if: matrix.renderer == 'd3d9'
         shell: cmd
         run: utils\legacy-asi\linux\build-probe.cmd
+      - name: Test production canonical launcher, hooks and normal-loader TLS
+        shell: pwsh
+        run: |
+          $probe = Join-Path $PWD 'build/legacy-asi-wine-probe'
+          $stdout = Join-Path $probe 'launcher-stdout.txt'
+          $stderr = Join-Path $probe 'launcher-stderr.txt'
+          $process = Start-Process -FilePath (Join-Path $probe 'reVC.exe') -WorkingDirectory $probe -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          if (!$process.WaitForExit(180000)) {
+            # The launcher's own job owns its child; never kill other Wine/game processes.
+            try { $process.Kill() } catch [InvalidOperationException] { }
+            throw 'Canonical launcher probe timed out. No retry is performed.'
+          }
+          Get-Content -LiteralPath $stdout, $stderr
+          if (Test-Path -LiteralPath (Join-Path $probe 'canonical-probe-result.txt')) {
+            Get-Content -LiteralPath (Join-Path $probe 'canonical-probe-result.txt')
+          }
+          if ($process.ExitCode -ne 0) { throw "Canonical launcher probe failed (exit $($process.ExitCode)). No retry is performed." }
+          $report = @{}
+          foreach ($line in Get-Content -LiteralPath (Join-Path $probe 'canonical-probe-result.txt')) {
+            if ($line.Contains('=')) {
+              $pair = $line -split '=', 2
+              if ($report.ContainsKey($pair[0])) { throw "Duplicate canonical probe field: $($pair[0])" }
+              $report[$pair[0]] = $pair[1]
+            }
+          }
+          foreach ($entry in @{ status='PASS'; stage='complete'; canonical_image='1'; modules='3'; native_events='2'; time_scale='1.750' }.GetEnumerator()) {
+            if ($report[$entry.Key] -cne $entry.Value) { throw "Canonical probe report mismatch: $($entry.Key)" }
+          }
       - name: Upload source-only Wine probe
         if: matrix.renderer == 'd3d9'
         uses: actions/upload-artifact@v6
@@ -93,10 +122,19 @@ jobs:
           ./premake5.exe --with-librw --with-legacy-asi --no-git-hash vs2022
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build experimental game
-        shell: pwsh
+        # The .sln uses logical platform names but .vcxproj uses physical
+        # Win32 and combined configuration names. Build the known dependency
+        # order directly, avoiding leaked global Platform properties.
+        shell: cmd
         run: |
-          msbuild build/legacy-asi/reVC-legacy-asi.sln /m:1 /nr:false /p:Configuration=Release /p:Platform=win-x86-librw_${{ matrix.renderer }}-oal
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          msbuild build/legacy-asi/librw.vcxproj /m:1 /nr:false /p:Configuration="Release win-x86-librw_${{ matrix.renderer }}-oal" /p:Platform=Win32
+          if errorlevel 1 exit /b 1
+          msbuild build/legacy-asi/legacy-bootstrap.vcxproj /m:1 /nr:false /p:Configuration="Release win-x86-librw_${{ matrix.renderer }}-oal" /p:Platform=Win32
+          if errorlevel 1 exit /b 1
+          msbuild build/legacy-asi/legacy-launcher.vcxproj /m:1 /nr:false /p:Configuration="Release win-x86-librw_${{ matrix.renderer }}-oal" /p:Platform=Win32
+          if errorlevel 1 exit /b 1
+          msbuild build/legacy-asi/reVC.vcxproj /m:1 /nr:false /p:Configuration="Release win-x86-librw_${{ matrix.renderer }}-oal" /p:Platform=Win32
+          if errorlevel 1 exit /b 1
       - name: Include legacy-ASI defaults and x86 runtime dependencies
         shell: pwsh
         run: |
