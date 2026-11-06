@@ -41,7 +41,16 @@ jobs:
         with:
           persist-credentials: false
       - name: Test launcher without Wine or executable mods
-        run: python3 utils/legacy-asi/linux/test_launcher.py
+        run: |
+          python3 utils/legacy-asi/linux/test_launcher.py
+          python3 utils/legacy-asi/linux/test_probe_runner.py
+      - name: Test page-protection policy and x86 branch arithmetic
+        run: |
+          mkdir -p build/legacy-asi-portable-tests
+          g++ -std=c++17 -Wall -Wextra -Werror utils/legacy-asi/tests/page_protection_tests.cpp -o build/legacy-asi-portable-tests/page-protection
+          build/legacy-asi-portable-tests/page-protection
+          g++ -std=c++17 -Wall -Wextra -Werror utils/legacy-asi/tests/rel32_tests.cpp -o build/legacy-asi-portable-tests/rel32
+          build/legacy-asi-portable-tests/rel32
       - name: Test empty defaults and preservation of user manifests
         run: cmake -P utils/legacy-asi/tests/package_defaults_tests.cmake
 
@@ -186,15 +195,15 @@ jobs:
         run: |
           cp utils/legacy-asi/linux/reVC-legacy-asi build/wine-probe/
           python3 build/wine-probe/reVC-legacy-asi --check
-          timeout --kill-after=10s 180s xvfb-run -a python3 build/wine-probe/reVC-legacy-asi
-          python3 - <<'PY'
-          from pathlib import Path
-          values = dict(line.split('=', 1) for line in Path('build/wine-probe/canonical-probe-result.txt').read_text().splitlines() if '=' in line)
-          expected = {'status': 'PASS', 'stage': 'complete', 'canonical_image': '1', 'modules': '3', 'native_events': '2', 'time_scale': '1.750'}
-          if any(values.get(key) != value for key, value in expected.items()):
-              raise SystemExit(f'Canonical Wine probe failed: {values}')
-          print('Canonical Wine probe passed; third-party mods and the game were not run.')
-          PY
+          xvfb-run -a python3 utils/legacy-asi/linux/run_probe.py --runtime build/wine-probe
+      - name: Retain failed Wine probe diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: legacy-asi-wine-failure-report
+          path: build/wine-probe/canonical-probe-result.txt
+          if-no-files-found: warn
+          retention-days: 7
       - name: Package the Linux-Wine launcher (not the native ELF build)
         run: |
           cp utils/legacy-asi/linux/reVC-legacy-asi build/linux-wine-package/

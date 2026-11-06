@@ -6,6 +6,7 @@
 #include "legacy_asi_entry.h"
 #include "legacy_asi_arena_protocol.h"
 #include "canonical_test_arena.h"
+#include "page_protection.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -43,7 +44,8 @@ bool HasProtection(std::uintptr_t address, DWORD protection)
 {
     MEMORY_BASIC_INFORMATION info = {};
     return VirtualQuery(reinterpret_cast<void*>(address), &info, sizeof(info)) &&
-        info.State == MEM_COMMIT && (info.Protect & 0xFF) == protection;
+        info.State == MEM_COMMIT &&
+        LegacyAsiTest::MatchesProtection(info.Protect, protection, info.Type == MEM_IMAGE);
 }
 
 bool IsInaccessibleImagePage(std::uintptr_t address)
@@ -52,7 +54,7 @@ bool IsInaccessibleImagePage(std::uintptr_t address)
     return VirtualQuery(reinterpret_cast<void*>(address), &info, sizeof(info)) &&
         info.AllocationBase == reinterpret_cast<void*>(LegacyAsi::MemoryBegin) &&
         info.Type == MEM_IMAGE && info.State == MEM_COMMIT &&
-        (info.Protect & 0xFF) == PAGE_NOACCESS;
+        LegacyAsiTest::MatchesProtection(info.Protect, PAGE_NOACCESS, true);
 }
 
 bool IsOwnedImage(std::uintptr_t address)

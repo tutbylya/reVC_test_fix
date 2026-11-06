@@ -1,5 +1,6 @@
 #include "legacy_asi_memory.h"
 #include "legacy_asi_entry.h"
+#include "legacy_asi_rel32.h"
 
 #if defined(REVC_LEGACY_ASI) && defined(_WIN32) && defined(_MSC_VER) && defined(_M_IX86)
 
@@ -11,7 +12,6 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <limits>
 #include <new>
 #include <vector>
 
@@ -143,13 +143,11 @@ bool MapBranch(std::uintptr_t address, void (*native)(), bool event)
 {
     if (!native || !ValidRange(address, event ? 6 : 5))
         return Fail("Invalid legacy branch address or native adapter");
-    const std::int64_t displacement = static_cast<std::int64_t>(reinterpret_cast<std::uintptr_t>(native)) -
-        (static_cast<std::int64_t>(address) + 5);
-    if (displacement < (std::numeric_limits<std::int32_t>::min)() ||
-        displacement > (std::numeric_limits<std::int32_t>::max)())
-        return Fail("The native adapter is outside a legacy rel32 branch range");
+    // This TU is x86-only: EIP arithmetic wraps at 32 bits. In particular,
+    // Wine may place a valid PE32 adapter above 2 GiB; it remains reachable.
+    const std::uint32_t relative = Rel32Displacement32(static_cast<std::uint32_t>(address),
+        static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(native)));
     unsigned char bytes[6] = {static_cast<unsigned char>(event ? 0xE8 : 0xE9), 0, 0, 0, 0, 0xC3};
-    const std::int32_t relative = static_cast<std::int32_t>(displacement);
     std::memcpy(bytes + 1, &relative, sizeof(relative));
     return MapBytes(address, bytes, event ? 6 : 5, Kind::Code, event ? Entry::Event : Entry::Function);
 }

@@ -8,6 +8,7 @@
 #include "../../../src/extras/legacy_asi_entry.h"
 #include "../../../src/extras/legacy_asi_loader.h"
 #include "../../../src/extras/legacy_asi_memory.h"
+#include "../tests/page_protection.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -34,22 +35,34 @@ bool ProtectedImagePage(std::uintptr_t address, DWORD protection)
     return VirtualQuery(reinterpret_cast<void*>(address), &info, sizeof(info)) == sizeof(info) &&
         info.AllocationBase == reinterpret_cast<void*>(LegacyAsiLaunch::ArenaBegin) &&
         info.Type == MEM_IMAGE && info.State == MEM_COMMIT &&
-        (info.Protect & 0xFF) == protection && !(info.Protect & PAGE_GUARD);
+        LegacyAsiTest::MatchesProtection(info.Protect, protection, true);
 }
 
 int Result(bool success, const char* stage, float timeScale = 0.0f)
 {
     // Production launcher sets the child cwd to its own checked directory.
     // A GUI bootstrap has no inherited stdout; use this explicit result file.
-    char text[1400];
+    const DWORD windowsError = GetLastError();
+    MEMORY_BASIC_INFORMATION scalar = {}, marker = {}, event = {}, unused = {};
+    VirtualQuery(reinterpret_cast<void*>(TimeScale), &scalar, sizeof(scalar));
+    VirtualQuery(reinterpret_cast<void*>(VersionMarker), &marker, sizeof(marker));
+    VirtualQuery(reinterpret_cast<void*>(GameProcessCall), &event, sizeof(event));
+    VirtualQuery(reinterpret_cast<void*>(UnmappedPage), &unused, sizeof(unused));
+    char text[3000];
     const int bytes = std::snprintf(text, sizeof(text),
         "[canonical-wine-probe]\nstatus=%s\nstage=%s\ncanonical_image=%u\n"
         "modules=%u\nnative_events=%u\ntime_scale=%.3f\n"
-        "memory_error=%s\nloader_error=%s\n",
+        "memory_error=%s\nloader_error=%s\nwindows_error=%lu\n"
+        "adapter_address=%p\ntimer_protect=0x%08lX\ntimer_type=0x%08lX\n"
+        "timer_state=0x%08lX\ntimer_owner=%p\nmarker_protect=0x%08lX\n"
+        "event_protect=0x%08lX\nunused_protect=0x%08lX\n",
         success ? "PASS" : "FAIL", stage,
         GetModuleHandleW(nullptr) == reinterpret_cast<HMODULE>(LegacyAsiLaunch::ArenaBegin) ? 1u : 0u,
         LegacyAsi::LoadedModuleCount(), nativeEvents, static_cast<double>(timeScale),
-        LegacyAsi::MemoryError(), LegacyAsi::LoaderError());
+        LegacyAsi::MemoryError(), LegacyAsi::LoaderError(), windowsError,
+        reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(OnNativeEvent)),
+        scalar.Protect, scalar.Type, scalar.State, scalar.AllocationBase,
+        marker.Protect, event.Protect, unused.Protect);
     if (bytes <= 0 || bytes >= static_cast<int>(sizeof(text))) return 1;
     HANDLE file = CreateFileW(L"canonical-probe-result.txt", GENERIC_WRITE, FILE_SHARE_READ,
         nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -77,16 +90,20 @@ int Probe(void* arena, DWORD capabilities)
     if (GetEnvironmentVariableW(LegacyAsiLaunch::HandleVariable, nullptr, 0) != 0 ||
         GetEnvironmentVariableW(LegacyAsiLaunch::TokenVariable, nullptr, 0) != 0)
         return Result(false, "capability-environment-not-cleared");
-    if (!LegacyAsi::AdoptCoreReservation(arena, capabilities) ||
-        !LegacyAsi::InitializeMemory() || !LegacyAsi::UsesCanonicalImage())
-        return Result(false, "adopt-core-image");
+    if (!LegacyAsi::AdoptCoreReservation(arena, capabilities))
+        return Result(false, "adopt-core-reservation");
+    if (!LegacyAsi::InitializeMemory()) return Result(false, "initialize-core-image");
+    if (!LegacyAsi::UsesCanonicalImage()) return Result(false, "not-canonical-image");
 
     constexpr std::uint32_t version = 0x53E58955;
     constexpr float initialTimeScale = 1.0f;
-    if (!LegacyAsi::MapReadOnlyData(VersionMarker, &version, sizeof(version)) ||
-        !LegacyAsi::MapMutableData(TimeScale, &initialTimeScale, sizeof(initialTimeScale)) ||
-        !LegacyAsi::MapEvent(GameProcessCall, OnNativeEvent) || !LegacyAsi::FinalizeMemory())
-        return Result(false, "map-and-finalize");
+    if (!LegacyAsi::MapReadOnlyData(VersionMarker, &version, sizeof(version)))
+        return Result(false, "map-version-marker");
+    if (!LegacyAsi::MapMutableData(TimeScale, &initialTimeScale, sizeof(initialTimeScale)))
+        return Result(false, "map-timer-field");
+    if (!LegacyAsi::MapEvent(GameProcessCall, OnNativeEvent))
+        return Result(false, "map-process-event");
+    if (!LegacyAsi::FinalizeMemory()) return Result(false, "finalize-page-protections");
     if (!ProtectedImagePage(VersionMarker, PAGE_READONLY) ||
         !ProtectedImagePage(TimeScale, PAGE_READWRITE) ||
         !ProtectedImagePage(GameProcessCall, PAGE_EXECUTE_READ) ||

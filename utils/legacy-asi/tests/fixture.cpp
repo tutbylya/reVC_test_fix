@@ -6,6 +6,11 @@
 #include <windows.h>
 #include <cstdint>
 #include <cstring>
+#include "page_protection.h"
+
+static_assert(PAGE_NOACCESS == 0x01 && PAGE_READONLY == 0x02 && PAGE_READWRITE == 0x04 &&
+    PAGE_WRITECOPY == 0x08 && PAGE_EXECUTE_READ == 0x20 && PAGE_GUARD == 0x100,
+    "The pure protection classifier must match the Win32 ABI constants.");
 
 #if !defined(_M_IX86) || !defined(FIXTURE_ID)
 #error This fixture must be compiled for MSVC x86 with FIXTURE_ID defined.
@@ -60,7 +65,9 @@ bool Install()
     if (!VirtualQuery(reinterpret_cast<void*>(GameProcessCall), &info, sizeof(info)) ||
         info.State != MEM_COMMIT || (info.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return false;
     if (!VirtualQuery(reinterpret_cast<void*>(TimeScale), &info, sizeof(info)) ||
-        info.State != MEM_COMMIT || (info.Protect & 0xFF) != PAGE_READWRITE) return false;
+        info.State != MEM_COMMIT ||
+        (info.Type == MEM_IMAGE && info.AllocationBase != reinterpret_cast<void*>(0x00400000)) ||
+        !LegacyAsiTest::MatchesProtection(info.Protect, PAGE_READWRITE, info.Type == MEM_IMAGE)) return false;
     previousEvent = ReadCall();
     return previousEvent && WriteCall(OnGameProcess);
 }
