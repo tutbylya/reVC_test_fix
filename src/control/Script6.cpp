@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 #include "Script.h"
 #include "ScriptCommands.h"
@@ -397,7 +400,11 @@ int8 CRunningScript::ProcessCommands1000To1099(int32 command)
 		int handle = CTheScripts::OpenScript();
 #else
 		CFileMgr::ChangeDir("\\");
+#ifdef MODLOADER
+		int handle = ModLoader_MainScm("data\\main.scm", "rb");
+#else
 		int handle = CFileMgr::OpenFile("data\\main.scm", "rb");
+#endif
 #endif
 		CFileMgr::Seek(handle, offset, 0);
 		CFileMgr::Read(handle, (char*)&CTheScripts::ScriptSpace[SIZE_MAIN_SCRIPT], SIZE_MISSION_SCRIPT);

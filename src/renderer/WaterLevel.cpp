@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 #include "main.h"
 #include "FileMgr.h"
 #include "FileLoader.h"
@@ -122,11 +125,19 @@ CWaterLevel::Initialise(Const char *pWaterDat)
 
 	do
 	{
+#ifdef MODLOADER
+		hFile = ModLoader_WaterproDat("DATA\\waterpro.dat", "rb");
+#else
 		hFile = CFileMgr::OpenFile("DATA\\waterpro.dat", "rb");
+#endif
 	}
 	while ( hFile < 0 );
 #else
+#ifdef MODLOADER
+	int32 hFile = ModLoader_WaterproDat("DATA\\waterpro.dat", "rb");
+#else
 	int32 hFile = CFileMgr::OpenFile("DATA\\waterpro.dat", "rb");
+#endif
 #endif
 	
 	if (hFile > 0)
@@ -257,7 +268,11 @@ CWaterLevel::Initialise(Const char *pWaterDat)
 			}
 		}
 
+#ifdef MODLOADER
+		hFile = ModLoader_WaterproDat("data\\waterpro.dat", "wb");
+#else
 		hFile = CFileMgr::OpenFileForWriting("data\\waterpro.dat");
+#endif
 
 		if (hFile > 0)
 		{

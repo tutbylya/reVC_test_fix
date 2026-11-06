@@ -14,7 +14,9 @@
 #include <fcntl.h>
 #include <sys/resource.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <limits.h>
+#include <errno.h>
 
 #ifdef __linux__
 #include <sys/syscall.h>
@@ -22,6 +24,10 @@
 
 #include "CdStream.h"
 #include "MemoryMgr.h"
+#ifdef MODLOADER
+#include <atomic>
+#include "modloader.h"
+#endif
 
 #define CDDEBUG(f, ...)   debug ("%s: " f "\n", "cdvd_stream", ## __VA_ARGS__)
 #define CDTRACE(f, ...)   printf("%s: " f "\n", "cdvd_stream", ## __VA_ARGS__)
@@ -97,6 +103,9 @@ struct CdReadInfo
 #endif
 	sem_t *pDoneSemaphore; // used for CdStreamSync
 	int32 hFile;
+#ifdef MODLOADER
+	bool bOwnFile; // loose resources have one descriptor per queued read
+#endif
 };
 
 char gCdImageNames[MAX_CDIMAGES+1][64];
@@ -115,6 +124,9 @@ bool _gbCdStreamOverlapped;
 #endif
 
 CdReadInfo *gpReadInfo;
+#ifdef MODLOADER
+static std::atomic<bool> gCdStreamStopRequested(false);
+#endif
 
 int32 lastPosnRead;
 
@@ -126,6 +138,9 @@ void
 CdStreamInitThread(void)
 {
 	int status;
+#ifdef MODLOADER
+	gCdStreamStopRequested.store(false, std::memory_order_release);
+#endif
 #ifndef ONE_THREAD_PER_CHANNEL
 	gChannelRequestQ.items = (int32 *)calloc(gNumChannels + 1, sizeof(int32));
 	gChannelRequestQ.head = 0;
@@ -169,10 +184,19 @@ CdStreamInitThread(void)
 			*channelI = i;
 			status = pthread_create(&gpReadInfo[i].pChannelThread, NULL, CdStreamThread, (void*)channelI);
 
-			if (status == -1)
+			if (
+#ifdef MODLOADER
+			    status != 0
+#else
+			    status == -1
+#endif
+			)
 			{
 				CDTRACE("failed to create sync thread");
 				ASSERT(0);
+#ifdef MODLOADER
+				abort(); // A release build must not queue reads without a worker.
+#endif
 				return;
 			}
 #endif
@@ -184,10 +208,19 @@ CdStreamInitThread(void)
 	gCdStreamThreadStatus = 0;
 	status = pthread_create(&_gCdStreamThread, NULL, CdStreamThread, nil);
 
-	if (status == -1)
+	if (
+#ifdef MODLOADER
+	    status != 0
+#else
+	    status == -1
+#endif
+	)
 	{
 		CDTRACE("failed to create sync thread");
 		ASSERT(0);
+#ifdef MODLOADER
+		abort();
+#endif
 		return;
 	}
 #else
@@ -252,6 +285,14 @@ GetGTA3ImgSize(void)
 {
 	ASSERT( gImgFiles[0] > 0 );
 	struct stat statbuf;
+#ifdef MODLOADER
+	// The archive may have been redirected outside the original models folder.
+	if (fstat(gImgFiles[0] - 1, &statbuf) == -1) {
+		CDTRACE("can't get size of gta3.img");
+		return 0;
+	}
+	return (uint32)statbuf.st_size;
+#else
 
 	char path[PATH_MAX];
 	realpath(gImgNames[0], path);
@@ -272,12 +313,23 @@ GetGTA3ImgSize(void)
 	}
 	ok:
 	return (uint32)statbuf.st_size;
+#endif
 }
 
 void
 CdStreamShutdown(void)
 {
-    // Destroying semaphores and free(gpReadInfo) will be done at threads
+#ifdef MODLOADER
+	if (gpReadInfo == nil)
+		return;
+	// Complete owned reads before stopping the worker or closing their files.
+	for (int32 i = 0; i < gNumChannels; i++)
+		CdStreamSync(i);
+	gCdStreamStopRequested.store(true, std::memory_order_release);
+#endif
+#ifndef MODLOADER
+    // The original workers release their own semaphores/read info on exit.
+#endif
 #ifndef ONE_THREAD_PER_CHANNEL
 	gCdStreamThreadStatus = 2;
 	sem_post(gCdStreamSema);
@@ -288,6 +340,26 @@ CdStreamShutdown(void)
 		sem_post(gpReadInfo[i].pStartSemaphore);
 		pthread_join(gpReadInfo[i].pChannelThread, nil);
 	}
+#endif
+#ifdef MODLOADER
+	// Join all workers before freeing shared read info (also safe for reinit).
+	for (int32 i = 0; i < gNumChannels; i++) {
+		if (gpReadInfo[i].bOwnFile)
+			close(gpReadInfo[i].hFile);
+#ifdef ONE_THREAD_PER_CHANNEL
+		RE3_SEM_CLOSE(gpReadInfo[i].pStartSemaphore, "/semaphore_start%d", i);
+#endif
+		RE3_SEM_CLOSE(gpReadInfo[i].pDoneSemaphore, "/semaphore_done%d", i);
+	}
+#ifndef ONE_THREAD_PER_CHANNEL
+	RE3_SEM_CLOSE(gCdStreamSema, "/semaphore_cd_stream");
+	gCdStreamSema = nil;
+	free(gChannelRequestQ.items);
+	gChannelRequestQ.items = nil;
+#endif
+	free(gpReadInfo);
+	gpReadInfo = nil;
+	gNumChannels = 0;
 #endif
 }
 
@@ -336,6 +408,98 @@ CdStreamRead(int32 channel, void *buffer, uint32 offset, uint32 size)
 
 	return STREAM_SUCCESS;
 }
+
+#ifdef MODLOADER
+int32
+CdStreamReadFile(int32 channel, const char *filename, void *buffer, uint32 offset, uint32 size)
+{
+	if (channel < 0 || channel >= gNumChannels || gpReadInfo == nil)
+		return STREAM_NONE;
+
+	CdReadInfo *pChannel = &gpReadInfo[channel];
+	if (pChannel->nSectorsToRead != 0 || pChannel->bReading)
+		return STREAM_NONE;
+	// CStreaming marks this channel as reading even if dispatch returns NONE.
+	// Publish failures so it retries/reports an I/O error, never decodes old data.
+	pChannel->nStatus = STREAM_ERROR;
+	if (filename == nil || filename[0] == '\0' || buffer == nil || size == 0 ||
+	    uint64(size) > uint64(SIZE_MAX) / CDSTREAM_SECTOR_SIZE)
+		return STREAM_NONE;
+
+	const uint64 byteOffset = uint64(offset) * CDSTREAM_SECTOR_SIZE;
+	if (off_t(byteOffset) < 0 || uint64(off_t(byteOffset)) != byteOffset)
+		return STREAM_NONE;
+	int flags = O_RDONLY;
+#ifdef O_CLOEXEC
+	flags |= O_CLOEXEC;
+#endif
+	int fd = open(filename, flags);
+	if (fd == -1) {
+		char *actualPath = casepath(filename, false);
+		if (actualPath) {
+			fd = open(actualPath, flags);
+			free(actualPath);
+		}
+	}
+	if (fd == -1)
+		return STREAM_NONE;
+	struct stat fileInfo;
+	if (fstat(fd, &fileInfo) == -1 || !S_ISREG(fileInfo.st_mode) ||
+	    fileInfo.st_size <= 0 || byteOffset >= uint64(fileInfo.st_size)) {
+		close(fd);
+		return STREAM_NONE;
+	}
+
+	pChannel->hFile = fd;
+	pChannel->bOwnFile = true;
+	pChannel->nStatus = STREAM_NONE;
+	pChannel->nSectorOffset = offset;
+	pChannel->nSectorsToRead = size;
+	pChannel->pBuffer = buffer;
+	pChannel->bLocked = false;
+	lastPosnRead = size + offset;
+#ifndef ONE_THREAD_PER_CHANNEL
+	AddToQueue(&gChannelRequestQ, channel);
+	if (sem_post(gCdStreamSema) != 0)
+#else
+	if (sem_post(pChannel->pStartSemaphore) != 0)
+#endif
+	{
+		// An already-awake worker may have claimed this descriptor. Rolling
+		// back/closing it here would race that read; never return stale data.
+		pChannel->nStatus = STREAM_ERROR;
+		fprintf(stderr, "cdvd_stream: cannot dispatch loose-file read (errno %d)\n", errno);
+		abort();
+	}
+	return STREAM_SUCCESS;
+}
+
+static int32
+ReadLooseCdStreamFile(CdReadInfo *channel)
+{
+	uint8 *buffer = (uint8 *)channel->pBuffer;
+	size_t remaining = size_t(channel->nSectorsToRead) * CDSTREAM_SECTOR_SIZE;
+	off_t position = off_t(channel->nSectorOffset) * CDSTREAM_SECTOR_SIZE;
+	while (remaining != 0) {
+		const size_t count = remaining > size_t(SSIZE_MAX) ? size_t(SSIZE_MAX) : remaining;
+		const ssize_t bytesRead = pread(channel->hFile, buffer, count, position);
+		if (bytesRead < 0) {
+			if (errno == EINTR && channel->nSectorsToRead != 0)
+				continue;
+			return channel->nSectorsToRead == 0 ? STREAM_WAITING : STREAM_ERROR;
+		}
+		if (bytesRead == 0) {
+			// Loose files need not be sector-aligned like IMG entries.
+			memset(buffer, 0, remaining);
+			break;
+		}
+		buffer += bytesRead;
+		remaining -= bytesRead;
+		position += bytesRead;
+	}
+	return STREAM_NONE;
+}
+#endif
 
 int32
 CdStreamGetStatus(int32 channel)
@@ -460,9 +624,17 @@ void *CdStreamThread(void *param)
 	debug("Created cdstream thread\n");
 
 #ifndef ONE_THREAD_PER_CHANNEL
+#ifdef MODLOADER
+	while (!gCdStreamStopRequested.load(std::memory_order_acquire)) {
+#else
 	while (gCdStreamThreadStatus != 2) {
+#endif
 		sem_wait(gCdStreamSema);
 
+#ifdef MODLOADER
+		if (gCdStreamStopRequested.load(std::memory_order_acquire))
+			break;
+#endif
 		int32 channel = GetFirstInQueue(&gChannelRequestQ);
 		
 		// spurious wakeup
@@ -470,16 +642,35 @@ void *CdStreamThread(void *param)
 			continue;
 #else
 	int channel = *((int*)param);
+#ifdef MODLOADER
+	free(param);
+	while (!gCdStreamStopRequested.load(std::memory_order_acquire)) {
+#else
 	while (gpReadInfo[channel].nThreadStatus != 2){
+#endif
 		sem_wait(gpReadInfo[channel].pStartSemaphore);
+#ifdef MODLOADER
+		if (gCdStreamStopRequested.load(std::memory_order_acquire))
+			break;
+#endif
 #endif
 
 		CdReadInfo *pChannel = &gpReadInfo[channel];
 		ASSERT( pChannel != nil );
 
 		// spurious wakeup or we sent interrupt signal for flushing
-		if(pChannel->nSectorsToRead == 0)
+		if(pChannel->nSectorsToRead == 0) {
+#ifdef MODLOADER
+			if (pChannel->bOwnFile) {
+				close(pChannel->hFile);
+				pChannel->bOwnFile = false;
+			}
+#ifndef ONE_THREAD_PER_CHANNEL
+			RemoveFirstInQueue(&gChannelRequestQ);
+#endif
+#endif
 			continue;
+		}
 
 		pChannel->bReading = true;
 
@@ -501,16 +692,29 @@ void *CdStreamThread(void *param)
 			ASSERT(pChannel->hFile >= 0);
 			ASSERT(pChannel->pBuffer != nil );
 
-			lseek(pChannel->hFile, (size_t)pChannel->nSectorOffset * (size_t)CDSTREAM_SECTOR_SIZE, SEEK_SET);
-			if (read(pChannel->hFile, pChannel->pBuffer, pChannel->nSectorsToRead * CDSTREAM_SECTOR_SIZE) == -1) {
-				// pChannel->nSectorsToRead == 0 at this point means we wanted to flush channel
-				// STREAM_WAITING is a little hack to make CStreaming not process this data
-				pChannel->nStatus = pChannel->nSectorsToRead == 0 ? STREAM_WAITING : STREAM_ERROR;
-			} else {
-				pChannel->nStatus = STREAM_NONE;
+#ifdef MODLOADER
+			if (pChannel->bOwnFile) {
+				pChannel->nStatus = ReadLooseCdStreamFile(pChannel);
+			} else
+#endif
+			{
+				lseek(pChannel->hFile, (size_t)pChannel->nSectorOffset * (size_t)CDSTREAM_SECTOR_SIZE, SEEK_SET);
+				if (read(pChannel->hFile, pChannel->pBuffer, pChannel->nSectorsToRead * CDSTREAM_SECTOR_SIZE) == -1) {
+					// pChannel->nSectorsToRead == 0 at this point means we wanted to flush channel
+					// STREAM_WAITING is a little hack to make CStreaming not process this data
+					pChannel->nStatus = pChannel->nSectorsToRead == 0 ? STREAM_WAITING : STREAM_ERROR;
+				} else {
+					pChannel->nStatus = STREAM_NONE;
+				}
 			}
 		}
 
+#ifdef MODLOADER
+		if (pChannel->bOwnFile) {
+			close(pChannel->hFile);
+			pChannel->bOwnFile = false;
+		}
+#endif
 #ifndef ONE_THREAD_PER_CHANNEL
 		RemoveFirstInQueue(&gChannelRequestQ);
 #endif
@@ -523,6 +727,7 @@ void *CdStreamThread(void *param)
 		}
 		pChannel->bReading = false;
 	}
+#ifndef MODLOADER
 	char semName[20];
 #ifndef ONE_THREAD_PER_CHANNEL
 	for ( int32 i = 0; i < gNumChannels; i++ )
@@ -539,6 +744,7 @@ void *CdStreamThread(void *param)
 	if (gpReadInfo)
 		free(gpReadInfo);
 	gpReadInfo = nil;
+#endif
 	pthread_exit(nil);
 }
 
@@ -547,12 +753,22 @@ CdStreamAddImage(char const *path)
 {
 	ASSERT(path != nil);
 	ASSERT(gNumImages < MAX_CDIMAGES);
+#ifdef MODLOADER
+	if (path == nil || gNumImages >= MAX_CDIMAGES || strlen(path) >= sizeof(gCdImageNames[0]))
+		return false;
+#endif
 
+#ifdef MODLOADER
+	const char *actualPath = ModLoader_GetCdStreamPath_Unsafe(path);
+	gImgFiles[gNumImages] = open(actualPath, _gdwCdStreamFlags);
+#else
+	const char *actualPath = path;
 	gImgFiles[gNumImages] = open(path, _gdwCdStreamFlags);
+#endif
 
 	// Fix case sensitivity and backslashes.
 	if (gImgFiles[gNumImages] == -1) {
-		char* real = casepath(path, false);
+		char* real = casepath(actualPath, false);
 		if (real)
 		{
 			gImgFiles[gNumImages] = open(real, _gdwCdStreamFlags);

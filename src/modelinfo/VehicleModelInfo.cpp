@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 #include <rpmatfx.h>
 
 #include "RwHelper.h"
@@ -1002,7 +1005,11 @@ CVehicleModelInfo::LoadVehicleColours(void)
 	int n;
 
 	CFileMgr::ChangeDir("\\DATA\\");
+#ifdef MODLOADER
+	fd = ModLoader_CarcolsDat("CARCOLS.DAT", "r");
+#else
 	fd = CFileMgr::OpenFile("CARCOLS.DAT", "r");
+#endif
 	CFileMgr::ChangeDir("\\");
 
 	for(i = 0; i < 256; i++)

@@ -52,6 +52,7 @@ Some of them can be toggled at runtime, some cannot.
 * Fixed the game running on Linux with Wayland
 * Fixed vigilante mission text for VCPD Cheetah
 * Discord Rich Presence
+* Native Windows Mod Loader support (x86/x64); see [installation and compatibility](docs/ModLoader.md).
 * Fixed a lot of smaller and bigger bugs
 * User files (saves and settings) stored in GTA root directory
 * Settings stored in reVC.ini file instead of gta_vc.set
@@ -82,10 +83,11 @@ The following things would be nice to have/do:
 
 * Some additions to freeroam_main.scm
 * Fix flying objects on game map
-* Port modloader (Maybe)
 * Improve Russian text + add ability to switch audio from English to Russian
 
 ## Modding
+
+Windows builds can load resource mods from separate folders using our compatible Mod Loader package. See [Mod Loader setup](docs/ModLoader.md) for installation, building the loader, and limitations. Original-game ASI/CLEO code mods remain incompatible.
 
 Asset modifications (models, texture, handling, script, ...) should work the same way as with the original game for the most part.
 

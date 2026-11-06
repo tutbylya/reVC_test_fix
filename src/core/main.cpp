@@ -28,6 +28,8 @@
 #include "Font.h"
 #include "Frontend.h"
 #include "Game.h"
+#include "legacy_asi.h"
+#include "remastered_ui.h"
 #include "Garages.h"
 #include "General.h"
 #include "GenericGameStorage.h"
@@ -78,6 +80,9 @@
 #include "postfx.h"
 #include "screendroplets.h"
 #include "timebars.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 #ifdef USE_OUR_VERSIONING
 #include "GitSHA1.h"
 #endif
@@ -557,7 +562,11 @@ Initialise3D(void *param)
 		DebugMenuInit();
 		DebugMenuPopulate();
 #endif // !DEBUGMENU
+#ifdef REVC_LEGACY_ASI
+		return LegacyAsi::InitialiseRenderWare();
+#else
 		return CGame::InitialiseRenderWare();
+#endif
 	}
 	POP_MEMID();
 
@@ -567,7 +576,11 @@ Initialise3D(void *param)
 static void 
 Terminate3D(void)
 {
+#ifdef REVC_LEGACY_ASI
+	LegacyAsi::ShutdownRenderWare();
+#else
 	CGame::ShutdownRenderWare();
+#endif
 #ifdef DEBUGMENU
 	DebugMenuShutdown();
 #endif // !DEBUGMENU
@@ -600,11 +613,48 @@ LoadSplash(const char *name)
 	if(tex == nil){
 		CFileMgr::SetDir("TXD\\");
 		sprintf(filename, "%s.txd", name);
+		RwStream *customStream = nil;
+		if (RemasteredUI::ScreenCount > 0) {
+			// Custom counts may refer to absent files. The filename overload of
+			// LoadTxd retries forever, so use a bounded stream open for this opt-in
+			// path and retain the previous splash when a replacement is missing.
+#ifdef MODLOADER
+			const char *resolved = ModLoader_RegisterAndGetSplashFile_Unsafe(filename);
+#else
+			const char *resolved = filename;
+#endif
+			customStream = RwStreamOpen(rwSTREAMFILENAME, rwSTREAMREAD, resolved);
+			if (!customStream && !splash.m_pTexture) {
+				name = "loadsc0";
+				strcpy(filename, "loadsc0.txd");
+#ifdef MODLOADER
+				resolved = ModLoader_RegisterAndGetSplashFile_Unsafe(filename);
+#endif
+				customStream = RwStreamOpen(rwSTREAMFILENAME, rwSTREAMREAD, resolved);
+			}
+			if (!customStream) {
+				CFileMgr::SetDir("");
+				return &splash;
+			}
+		}
 		if(splash.m_pTexture)
 			splash.Delete();
 		if(txd)
 			CTxdStore::RemoveTxd(splashTxdId);
-		CTxdStore::LoadTxd(splashTxdId, filename);
+		if (customStream) {
+			const bool loaded = CTxdStore::LoadTxd(splashTxdId, customStream);
+			RwStreamClose(customStream, nil);
+			if (!loaded) {
+				CFileMgr::SetDir("");
+				return &splash;
+			}
+		} else {
+#ifdef MODLOADER
+			CTxdStore::LoadTxd(splashTxdId, ModLoader_RegisterAndGetSplashFile_Unsafe(filename));
+#else
+			CTxdStore::LoadTxd(splashTxdId, filename);
+#endif
+		}
 		CTxdStore::AddRef(splashTxdId);
 		CTxdStore::PushCurrentTxd();
 		CTxdStore::SetCurrentTxd(splashTxdId);
@@ -631,6 +681,9 @@ GetRandomSplashScreen(void)
 	int index;
 	static int index2 = 0;
 	static char splashName[128];
+	if (RemasteredUI::ScreenCount > 0 && RemasteredUI::FormatLoadingScreenName(
+		splashName, sizeof(splashName), CGeneral::GetRandomNumber()))
+		return splashName;
 	static int splashIndex[12] = {
 		1, 2,
 		3, 4,
@@ -687,7 +740,8 @@ LoadingScreen(const char *str1, const char *str2, const char *splashscreen)
 #endif
 
 #ifndef RANDOMSPLASH
-	splashscreen = "LOADSC0";
+	if (RemasteredUI::ScreenCount <= 0)
+		splashscreen = "LOADSC0";
 #endif
 
 	splash = LoadSplash(splashscreen);
@@ -1525,7 +1579,11 @@ Render2dStuff(void)
 		CSceneEdit::Draw();
 	else
 #endif
+#ifdef REVC_LEGACY_ASI
+		LegacyAsi::DrawHud();
+#else
 		CHud::Draw();
+#endif
 
 	CSpecialFX::Render2DFXs();
 	CUserDisplay::OnscnTimer.ProcessForDisplay();
@@ -1559,6 +1617,26 @@ RenderMenus(void)
 #endif
 }
 
+static void
+Render2dStuffWithPlugins(void)
+{
+#ifdef REVC_LEGACY_ASI
+	LegacyAsi::Draw2D();
+#else
+	Render2dStuff();
+#endif
+}
+
+static void
+ProcessGameWithPlugins(void)
+{
+#ifdef REVC_LEGACY_ASI
+	LegacyAsi::ProcessGame();
+#else
+	CGame::Process();
+#endif
+}
+
 void
 Render2dStuffAfterFade(void)
 {
@@ -1579,6 +1657,9 @@ Render2dStuffAfterFade(void)
 void
 Idle(void *arg)
 {
+#ifdef MODLOADER
+	ModLoader_Tick();
+#endif
 	const bool windowMinimizedPause = psRefreshAndGetWindowMinimizedPause();
 	CTimer::Update();
 	if (windowMinimizedPause) {
@@ -1606,7 +1687,7 @@ Idle(void *arg)
 		CPad::UpdatePads();
 		FrontEndMenuManager.Process();
 	} else
-		CGame::Process();
+		ProcessGameWithPlugins();
 	tbEndTimer("CGame::Process");
 	POP_MEMID();
 
@@ -1712,7 +1793,7 @@ Idle(void *arg)
 		tbEndTimer("RenderMotionBlur");
 
 		tbStartTimer(0, "Render2dStuff");
-		Render2dStuff();
+		Render2dStuffWithPlugins();
 		tbEndTimer("Render2dStuff");
 	}else{
 		CDraw::CalculateAspectRatio();
@@ -1765,6 +1846,9 @@ popret:	POP_MEMID();	// MEMID_RENDER
 void
 FrontendIdle(void)
 {
+#ifdef MODLOADER
+	ModLoader_Tick();
+#endif
 	const bool windowMinimizedPause = psRefreshAndGetWindowMinimizedPause();
 	CTimer::Update();
 	if (windowMinimizedPause) {
@@ -1825,7 +1909,8 @@ AppEventHandler(RsEvent event, void *param)
 	{
 		case rsINITIALIZE:
 		{
-			CGame::InitialiseOnceBeforeRW();
+			if (!CGame::InitialiseOnceBeforeRW())
+				return rsEVENTERROR;
 			return RsInitialize() ? rsEVENTPROCESSED : rsEVENTERROR;
 		}
 
@@ -1926,7 +2011,7 @@ TheModelViewer(void)
 	DefinedState();
 	CVisibilityPlugins::InitAlphaEntityList();
 	CAnimViewer::Render();
-	Render2dStuff(); // X
+	Render2dStuffWithPlugins(); // X
 	DoRWStuffEndOfFrame();
 	CTimer::Update();
 #endif
@@ -1991,7 +2076,7 @@ void TheGame(void)
 
 			PUSH_MEMID(MEMID_GAME_PROCESS);
 			CPointLights::InitPerFrame();
-			CGame::Process();
+			ProcessGameWithPlugins();
 			POP_MEMID();
 
 			DMAudio.Service();
@@ -2042,7 +2127,7 @@ void TheGame(void)
 					TheCamera.SetMotionBlurAlpha(150);
 				TheCamera.RenderMotionBlur();
 
-				Render2dStuff();
+				Render2dStuffWithPlugins();
 			}
 			else
 			{

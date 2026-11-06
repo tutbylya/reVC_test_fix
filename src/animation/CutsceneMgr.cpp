@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 #include "General.h"
 #include "CutsceneMgr.h"
@@ -211,7 +214,11 @@ CCutsceneMgr::LoadCutsceneData(const char *szCutsceneName)
 	strcpy(ms_cutsceneName, szCutsceneName);
 
 	RwStream *stream;
+#ifdef MODLOADER
+	stream = RwStreamOpen(rwSTREAMFILENAME, rwSTREAMREAD, ModLoader_GetCdStreamPath_Unsafe("ANIM\\CUTS.IMG"));
+#else
 	stream = RwStreamOpen(rwSTREAMFILENAME, rwSTREAMREAD, "ANIM\\CUTS.IMG");
+#endif
 	assert(stream);
 
 	// Load animations
@@ -230,7 +237,11 @@ CCutsceneMgr::LoadCutsceneData(const char *szCutsceneName)
 	RwStreamClose(stream, nil);
 
 	// Load camera data
+#ifdef MODLOADER
+	file = CFileMgr::OpenFile(ModLoader_GetCdStreamPath_Unsafe("ANIM\\CUTS.IMG"), "rb");
+#else
 	file = CFileMgr::OpenFile("ANIM\\CUTS.IMG", "rb");
+#endif
 	sprintf(gString, "%s.DAT", szCutsceneName);
 	if (ms_pCutsceneDir->FindItem(gString, offset, size)) {
 		CStreaming::ImGonnaUseStreamingMemory();

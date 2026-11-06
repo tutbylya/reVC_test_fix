@@ -121,6 +121,11 @@ public:
 	static void Update(void);
 	static void LoadCdDirectory(void);
 	static void LoadCdDirectory(const char *dirname, int32 n);
+#ifdef MODLOADER
+	static void LoadCdDirectoryUsingCallbacks(void *userData, int n,
+	    bool (*readEntry)(void *, void *, uint32_t), bool (*registerEntry)(void *, void *, bool),
+	    void (*registerSpecialEntry)(void *, void *));
+#endif
 	static bool ConvertBufferToObject(int8 *buf, int32 streamId);
 	static bool FinishLoadingLargeFile(int8 *buf, int32 streamId);
 	static bool HasModelLoaded(int32 id) { return ms_aInfoForModel[id].m_loadState == STREAMSTATE_LOADED; }

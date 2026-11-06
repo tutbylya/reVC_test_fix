@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 #include "main.h"
 #include "FileMgr.h"
@@ -17,7 +20,11 @@ CSurfaceTable::Initialise(Const char *filename)
 	float adhesiveLimit;
 
 	CFileMgr::SetDir("");
+#ifdef MODLOADER
+	ModLoader_SurfaceDat(filename, work_buff, sizeof(work_buff), "r");
+#else
 	CFileMgr::LoadFile(filename, work_buff, sizeof(work_buff), "r");
+#endif
 
 	line = (char*)work_buff;
 	for(lineno = 0; lineno < NUMADHESIVEGROUPS; lineno++){

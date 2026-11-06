@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 #include "FileMgr.h"
 #ifdef MORE_LANGUAGES
@@ -77,7 +80,11 @@ CText::Load(void)
 #endif
 	}
 
+#ifdef MODLOADER
+	file = CFileMgr::OpenFile(ModLoader_RegisterAndGetGxtFile_Unsafe(filename), "rb");
+#else
 	file = CFileMgr::OpenFile(filename, "rb");
+#endif
 
 	offset = 0;
 	while (!tkey_loaded || !tdat_loaded) {
@@ -284,7 +291,11 @@ CText::LoadMissionText(char *MissionTableName)
 #endif
 	}
 	CTimer::Suspend();
+#ifdef MODLOADER
+	int file = CFileMgr::OpenFile(ModLoader_RegisterAndGetGxtFile_Unsafe(filename), "rb");
+#else
 	int file = CFileMgr::OpenFile(filename, "rb");
+#endif
 	CFileMgr::Seek(file, MissionTextOffsets.data[missionTableId].offset, SEEK_SET);
 
 	char TableCheck[8];

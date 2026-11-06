@@ -7,6 +7,7 @@
 #include "crossplatform.h"
 
 #include "FileMgr.h"
+#include "FileReadBuffer.h"
 
 const char *_psGetUserFilesFolder();
 
@@ -245,25 +246,18 @@ CFileMgr::SetDirMyDocuments(void)
 ssize_t
 CFileMgr::LoadFile(const char *file, uint8 *buf, int maxlen, const char *mode)
 {
-	int fd;
-	ssize_t n, len;
-
-	fd = myfopen(file, mode);
+	if(!buf || maxlen <= 0)
+		return -1;
+	buf[0] = 0;
+	const int fd = myfopen(file, mode);
 	if(fd == 0)
 		return -1;
-	len = 0;
-	do{
-		n = myfread(buf + len, 1, 0x4000, fd);
-#ifndef FIX_BUGS
-		if (n < 0)
-			return -1;
-#endif
-		len += n;
-		assert(len < maxlen);
-	}while(n == 0x4000);
-	buf[len] = 0;
+	const auto len = FileReadBuffer::Read(buf, maxlen, [fd](unsigned char *destination, size_t bytes) -> std::ptrdiff_t {
+		const size_t n = myfread(destination, 1, bytes, fd);
+		return ferror(myfiles[fd].file) ? -1 : static_cast<std::ptrdiff_t>(n);
+	});
 	myfclose(fd);
-	return len;
+	return static_cast<ssize_t>(len);
 }
 
 int

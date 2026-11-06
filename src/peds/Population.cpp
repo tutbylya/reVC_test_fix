@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 #include "Game.h"
 #include "General.h"
@@ -175,7 +178,11 @@ CPopulation::LoadPedGroups()
 	char modelName[256];
 
 	CFileMgr::ChangeDir("\\DATA\\");
+#ifdef MODLOADER
+	fd = ModLoader_PedGrpDat("PEDGRP.DAT", "r");
+#else
 	fd = CFileMgr::OpenFile("PEDGRP.DAT", "r");
+#endif
 	CFileMgr::ChangeDir("\\");
 	while (CFileMgr::ReadLine(fd, line, sizeof(line))) {
 		int end;

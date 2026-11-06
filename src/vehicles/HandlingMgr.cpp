@@ -1,9 +1,13 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 #include "main.h"
 #include "FileMgr.h"
 #include "Physical.h"
 #include "HandlingMgr.h"
+#include "HandlingFileParser.h"
 
 cHandlingDataMgr mod_HandlingManager;
 
@@ -137,54 +141,55 @@ cHandlingDataMgr::Initialise(void)
 void
 cHandlingDataMgr::LoadHandlingData(void)
 {
-	char *start, *end;
 	char line[201];	// weird value
-	char delim[4];	// not sure
 	char *word;
 	int field, handlingId;
-	int keepGoing;
 	tHandlingData *handling;
 	tFlyingHandlingData *flyingHandling;
 	tBoatHandlingData *boatHandling;
 	tBikeHandlingData *bikeHandling;
 
 	CFileMgr::SetDir("DATA");
-	CFileMgr::LoadFile(HandlingFilename, work_buff, sizeof(work_buff), "r");
+#ifdef MODLOADER
+	const ssize_t loaded = ModLoader_HandlingCfg(HandlingFilename, work_buff, sizeof(work_buff), "r");
+#else
+	const ssize_t loaded = CFileMgr::LoadFile(HandlingFilename, work_buff, sizeof(work_buff), "r");
+#endif
 	CFileMgr::SetDir("");
-
-	start = (char*)work_buff;
-	end = start+1;
+	if(loaded <= 0 || static_cast<size_t>(loaded) >= sizeof(work_buff)){
+		debug("Handling data load failed or exceeded its buffer.\n");
+		return;
+	}
+	HandlingFile::Lines lines(reinterpret_cast<const char*>(work_buff), static_cast<size_t>(loaded));
 	handling = nil;
 	flyingHandling = nil;
 	boatHandling = nil;
 	bikeHandling = nil;
-	keepGoing = 1;
-
-	while(keepGoing){
-		// find end of line
-		while(*end != '\n') end++;
-
-		// get line
-		int32 lineLength = end - start;
-#ifdef GTA_PS2
-		// CRs are left untouched. we assume every line ends in one
-		lineLength--;
-#endif
-		strncpy(line, start, lineLength);
-		line[lineLength] = '\0';
-		start = end+1;
-		end = start+1;
-
-		// yeah, this is kinda crappy
-		if(strcmp(line, ";the end") == 0)
-			keepGoing = 0;
-		else if(line[0] != ';'){
-			if(line[0] == '!'){
+	for(;;){
+		const auto lineResult = lines.Next(line, sizeof(line));
+		if(lineResult == HandlingFile::LineResult::End) break;
+		if(lineResult != HandlingFile::LineResult::Ready){
+			debug("Skipping oversized or invalid handling line.\n");
+			continue;
+		}
+		const auto record = HandlingFile::Parse(line);
+		if(record.kind == HandlingFile::Kind::End) break;
+		if(record.kind == HandlingFile::Kind::Ignore) continue;
+		if(record.kind == HandlingFile::Kind::Invalid){
+			debug("Skipping malformed handling record.\n");
+			continue;
+		}
+		handlingId = FindExactWord(record.fields[record.NameIndex()], (const char*)VehicleNames, 14, NUMHANDLINGS);
+		if(!HandlingFile::VehicleMatches(record.kind, handlingId, NUMHANDLINGS,
+		    HANDLING_BIKE, HANDLING_FREEWAY, HANDLING_PREDATOR, HANDLING_SEAPLANE, HANDLING_SEAPLANE, HANDLING_RCCOPTER)){
+			debug("Skipping unknown or mismatched handling vehicle: %s\n", record.fields[record.NameIndex()]);
+			continue;
+		}
+		{
+			if(record.kind == HandlingFile::Kind::Bike){
 				// Bike data
-				field = 0;
-				strcpy(delim, " \t");
-				// FIX: game seems to use a do-while loop here
-				for(word = strtok(line, delim); word; word = strtok(nil, delim)){
+				for(field = 0; field < static_cast<int>(record.count); field++){
+					word = record.fields[field];
 					switch(field){
 					case  0: break;
 					case  1:
@@ -209,15 +214,12 @@ cHandlingDataMgr::LoadHandlingData(void)
 					case 15: bikeHandling->fWheelieStabMult = atof(word); break;
 					case 16: bikeHandling->fStoppieStabMult = atof(word); break;
 					}
-					field++;
 				}
 				ConvertBikeDataToGameUnits(bikeHandling);
-			}else if(line[0] == '$'){
+			}else if(record.kind == HandlingFile::Kind::Flying){
 				// Flying data
-				field = 0;
-				strcpy(delim, " \t");
-				// FIX: game seems to use a do-while loop here
-				for(word = strtok(line, delim); word; word = strtok(nil, delim)){
+				for(field = 0; field < static_cast<int>(record.count); field++){
+					word = record.fields[field];
 					switch(field){
 					case  0: break;
 					case  1:
@@ -245,14 +247,11 @@ cHandlingDataMgr::LoadHandlingData(void)
 					case 18: flyingHandling->vecSpeedRes.y = atof(word); break;
 					case 19: flyingHandling->vecSpeedRes.z = atof(word); break;
 					}
-					field++;
 				}
-			}else if(line[0] == '%'){
+			}else if(record.kind == HandlingFile::Kind::Boat){
 				// Boat data
-				field = 0;
-				strcpy(delim, " \t");
-				// FIX: game seems to use a do-while loop here
-				for(word = strtok(line, delim); word; word = strtok(nil, delim)){
+				for(field = 0; field < static_cast<int>(record.count); field++){
+					word = record.fields[field];
 					switch(field){
 					case  0: break;
 					case  1:
@@ -276,13 +275,10 @@ cHandlingDataMgr::LoadHandlingData(void)
 					case 14: boatHandling->vecTurnRes.z = atof(word); break;
 					case 15: boatHandling->fLook_L_R_BehindCamHeight = atof(word); break;
 					}
-					field++;
 				}
 			}else{
-				field = 0;
-				strcpy(delim, " \t");
-				// FIX: game seems to use a do-while loop here
-				for(word = strtok(line, delim); word; word = strtok(nil, delim)){
+				for(field = 0; field < static_cast<int>(record.count); field++){
+					word = record.fields[field];
 					switch(field){
 					case  0:
 						handlingId = FindExactWord(word, (const char*)VehicleNames, 14, NUMHANDLINGS);
@@ -326,7 +322,6 @@ cHandlingDataMgr::LoadHandlingData(void)
 					case 31: handling->FrontLights = atoi(word); break;
 					case 32: handling->RearLights = atoi(word); break;
 					}
-					field++;
 				}
 				ConvertDataToGameUnits(handling);
 			}

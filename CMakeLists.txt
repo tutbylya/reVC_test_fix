@@ -36,11 +36,31 @@ option(${PROJECT}_WITH_OPUS "Build ${EXECUTABLE} with opus support" OFF)
 option(${PROJECT}_WITH_LIBSNDFILE "Build ${EXECUTABLE} with libsndfile (instead of internal decoder)" OFF)
 
 set_property(CACHE ${PROJECT}_AUDIO PROPERTY STRINGS ${${PROJECT}_AUDIOS})
+option(${PROJECT}_WITH_MODLOADER "Enable optional Mod Loader resource support (Windows/Linux)" ON)
+option(${PROJECT}_WITH_LEGACY_ASI "Build experimental original-ASI compatibility (Windows MSVC x86 only)" OFF)
 message(STATUS "${PROJECT}_AUDIO = ${${PROJECT}_AUDIO} (choices=${${PROJECT}_AUDIOS})")
 set("${PROJECT}_AUDIO_${${PROJECT}_AUDIO}" ON)
 
 if(NOT ${PROJECT}_AUDIO IN_LIST ${PROJECT}_AUDIOS)
     message(FATAL_ERROR "Illegal ${PROJECT}_AUDIO=${${PROJECT}_AUDIO}")
+endif()
+
+if(${PROJECT}_WITH_LEGACY_ASI)
+    if(NOT WIN32 OR NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" OR
+       NOT CMAKE_SIZEOF_VOID_P EQUAL 4 OR
+       NOT CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "X86")
+        message(FATAL_ERROR "REVC_WITH_LEGACY_ASI requires MSVC targeting Windows x86 (Visual Studio -A Win32). Native x64/Linux are not supported.")
+    endif()
+    if(NOT LIBRW_PLATFORM STREQUAL "D3D9" AND NOT LIBRW_PLATFORM STREQUAL "GL3")
+        message(FATAL_ERROR "REVC_WITH_LEGACY_ASI requires -DLIBRW_PLATFORM=D3D9 or GL3. WGPU and other backends are not supported.")
+    endif()
+    if(LIBRW_PLATFORM STREQUAL "GL3" AND NOT LIBRW_GL3_GFXLIB STREQUAL "GLFW")
+        message(FATAL_ERROR "REVC_WITH_LEGACY_ASI with GL3 requires -DLIBRW_GL3_GFXLIB=GLFW.")
+    endif()
+    if(NOT ${PROJECT}_AUDIO STREQUAL "OAL")
+        message(FATAL_ERROR "REVC_WITH_LEGACY_ASI currently requires -DREVC_AUDIO=OAL.")
+    endif()
+    message(STATUS "Experimental legacy ASI target enabled; normal x64/Linux configurations remain unchanged.")
 endif()
 
 # ── Discord RPC ────────────────────────────────────────────────────────────────

@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 #include "SpecialFX.h"
 #include "RenderBuffer.h"
@@ -754,8 +757,13 @@ C3dMarkers::Init()
 	CTxdStore::PushCurrentTxd();
 	CTxdStore::SetCurrentTxd(txdSlot);
 	CFileMgr::ChangeDir("\\");
+#ifdef MODLOADER
+	m_pRpClumpArray[MARKERTYPE_ARROW] = (RpClump*)ModLoader_ArrowDff("models/generic/arrow.dff");
+	m_pRpClumpArray[MARKERTYPE_CYLINDER] = (RpClump*)ModLoader_ZonecylbDff("models/generic/zonecylb.dff");
+#else
 	m_pRpClumpArray[MARKERTYPE_ARROW] = CFileLoader::LoadAtomicFile2Return("models/generic/arrow.dff");
 	m_pRpClumpArray[MARKERTYPE_CYLINDER] = CFileLoader::LoadAtomicFile2Return("models/generic/zonecylb.dff");
+#endif
 	CTxdStore::PopCurrentTxd();
 }
 

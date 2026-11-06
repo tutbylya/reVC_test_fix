@@ -21,15 +21,52 @@ list(REMOVE_ITEM ${PROJECT}_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/extras/GitSHA1.
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/extras/GitSHA1.cpp.in" "${CMAKE_CURRENT_BINARY_DIR}/extras/GitSHA1.cpp" @ONLY)
 list(APPEND ${PROJECT}_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/extras/GitSHA1.cpp")
 
-add_executable(${EXECUTABLE} WIN32
-    ${${PROJECT}_SOURCES}
-)
+if(${PROJECT}_WITH_LEGACY_ASI)
+    add_library(${EXECUTABLE} SHARED ${${PROJECT}_SOURCES})
+else()
+    add_executable(${EXECUTABLE} WIN32 ${${PROJECT}_SOURCES})
+endif()
+
+if(${PROJECT}_WITH_LEGACY_ASI)
+    # The source glob includes extras/legacy_asi*.cpp; the opt-in macro is
+    # private to the game core and must not change the renderer's ABI.
+    target_compile_definitions(${EXECUTABLE} PRIVATE REVC_LEGACY_ASI REVC_LEGACY_ASI_CORE_DLL)
+    target_link_options(${EXECUTABLE} PRIVATE /BASE:0x20000000)
+    set_target_properties(${EXECUTABLE} PROPERTIES
+        OUTPUT_NAME "reVC-core"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/legacy-asi"
+        PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/legacy-asi"
+    )
+    add_executable(reVC-legacy-bootstrap WIN32
+        "${PROJECT_SOURCE_DIR}/utils/legacy-asi/launcher/bootstrap.cpp"
+        "${PROJECT_SOURCE_DIR}/utils/legacy-asi/launcher/bootstrap_entry.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/extras/legacy_asi_identity.cpp")
+    target_compile_definitions(reVC-legacy-bootstrap PRIVATE REVC_LEGACY_ASI)
+    target_compile_features(reVC-legacy-bootstrap PRIVATE cxx_std_20)
+    target_link_options(reVC-legacy-bootstrap PRIVATE /BASE:0x400000 /FIXED /DYNAMICBASE:NO
+        /INCREMENTAL:NO /ENTRY:LegacyBootstrapEntry)
+    set_source_files_properties("${PROJECT_SOURCE_DIR}/utils/legacy-asi/launcher/bootstrap_entry.cpp"
+        PROPERTIES COMPILE_OPTIONS "/GS-;/JMC-")
+    set_target_properties(reVC-legacy-bootstrap PROPERTIES OUTPUT_NAME "reVC-game"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/legacy-asi")
+    add_executable(reVC-legacy-launcher WIN32
+        "${PROJECT_SOURCE_DIR}/utils/legacy-asi/launcher/launcher.cpp"
+        "${PROJECT_SOURCE_DIR}/utils/legacy-asi/launcher/debug_tls.cpp")
+    target_compile_features(reVC-legacy-launcher PRIVATE cxx_std_20)
+    target_link_libraries(reVC-legacy-launcher PRIVATE shell32 user32)
+    set_target_properties(reVC-legacy-launcher PROPERTIES
+        OUTPUT_NAME "reVC"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/legacy-asi")
+    add_dependencies(${EXECUTABLE} reVC-legacy-launcher reVC-legacy-bootstrap)
+endif()
 
 target_link_libraries(${EXECUTABLE} PRIVATE
     librw::librw
     Threads::Threads
-    glfw
 )
+if(NOT ${PROJECT}_WITH_LEGACY_ASI OR NOT LIBRW_PLATFORM_D3D9)
+    target_link_libraries(${EXECUTABLE} PRIVATE glfw)
+endif()
 
 target_include_directories(${EXECUTABLE}
     PRIVATE
@@ -53,6 +90,9 @@ endif()
 
 target_compile_definitions(${EXECUTABLE} PRIVATE CMAKE_BUILD)
 target_compile_definitions(${EXECUTABLE} PRIVATE USE_OUR_VERSIONING)
+if(NOT ${PROJECT}_WITH_MODLOADER)
+    target_compile_definitions(${EXECUTABLE} PRIVATE REVC_NO_MODLOADER)
+endif()
 
 if(${PROJECT}_AUDIO STREQUAL "OAL")
     find_package(OpenAL REQUIRED)
@@ -165,6 +205,9 @@ set_target_properties(${EXECUTABLE}
 target_compile_features(${EXECUTABLE} PRIVATE cxx_std_23)
 
 if(${PROJECT}_INSTALL)
+    if(${PROJECT}_WITH_LEGACY_ASI)
+        install(TARGETS reVC-legacy-launcher reVC-legacy-bootstrap RUNTIME DESTINATION ".")
+    endif()
     install(
         TARGETS ${EXECUTABLE}
         EXPORT ${EXECUTABLE}-targets

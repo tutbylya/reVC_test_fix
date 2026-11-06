@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 #include "main.h"
 #include "PlayerSkin.h"
@@ -27,7 +30,11 @@ FindPlayerDff(uint32 &offset, uint32 &size)
 	int file;
 	CDirectory::DirectoryInfo info;
 
+#ifdef MODLOADER
+	file = CFileMgr::OpenFile(ModLoader_GetCdDirectoryPath_Unsafe("models\\gta3.dir"), "rb");
+#else
 	file = CFileMgr::OpenFile("models\\gta3.dir", "rb");
+#endif
 
 	do {
 		if (!CFileMgr::Read(file, (char*)&info, sizeof(CDirectory::DirectoryInfo)))
@@ -100,12 +107,19 @@ CPlayerSkin::GetSkinTexture(const char *texName)
 	CTxdStore::PopCurrentTxd();
 	if (tex != nil) return tex;
 
-	if (strcmp(DEFAULT_SKIN_NAME, texName) == 0 || texName[0] == '\0')
-		sprintf(gString, "models\\generic\\player.bmp");
-	else
+	const char *imagePath;
+	if (strcmp(DEFAULT_SKIN_NAME, texName) == 0 || texName[0] == '\0') {
+#ifdef MODLOADER
+		imagePath = ModLoader_RegisterAndGetPlayerBmpFile_Unsafe("models\\generic\\player.bmp");
+#else
+		imagePath = "models\\generic\\player.bmp";
+#endif
+	} else {
 		sprintf(gString, "skins\\%s.bmp", texName);
+		imagePath = gString;
+	}
 
-	if (RwImage *image = RtBMPImageRead(gString)) {
+	if (RwImage *image = RtBMPImageRead(imagePath)) {
 		RwImageFindRasterFormat(image, rwRASTERTYPETEXTURE, &width, &height, &depth, &format);
 		raster = RwRasterCreate(width, height, depth, format);
 		RwRasterSetFromImage(raster, image);

@@ -538,4 +538,16 @@ static_assert(false, "SUPPORT_XBOX_SCRIPT and SUPPORT_MOBILE_SCRIPT are mutually
 #error EXTERNAL_3D_SOUND cannot work on PS2
 #endif
 
+// Windows uses the native reVC ASI ABI; Linux has a built-in resource-folder
+// backend. Other platforms and Vanilla builds keep their original loaders.
+#if (defined(_WIN32) || defined(__linux__)) && !defined(VANILLA_DEFINES) && !defined(REVC_NO_MODLOADER)
+#define MODLOADER
+#endif
+
+#ifdef MODLOADER
+#undef USE_TXD_CDIMAGE
+#undef ONE_THREAD_PER_CHANNEL
+#undef FLUSHABLE_STREAMING
+#endif
+
 #endif // __GTA_CONFIG_H__

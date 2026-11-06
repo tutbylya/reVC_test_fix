@@ -29,6 +29,10 @@ enum
 
 void CdStreamInit(int numChannels);
 int CdStreamRead(int channel, void *buffer, unsigned int offset, unsigned int size);
+#if defined(MODLOADER) && !defined(_WIN32)
+// Queue an owned loose file; offsets/sizes use 2048-byte sectors, not IMG selectors.
+int CdStreamReadFile(int channel, const char *filename, void *buffer, unsigned int offset, unsigned int size);
+#endif
 int CdStreamGetStatus(int channel);
 int CdStreamGetLastPosn(void);
 int CdStreamSync(int channel);

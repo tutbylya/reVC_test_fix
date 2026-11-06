@@ -1,0 +1,59 @@
+name: reVC legacy ASI prototype
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/extras/legacy_asi*'
+      - 'src/core/Game.cpp'
+      - 'src/core/main.cpp'
+      - 'src/skel/glfw/glfw.cpp'
+      - 'src/skel/win/win.cpp'
+      - 'utils/legacy-asi/**'
+      - 'premake5.lua'
+      - '.github/workflows/reVC_legacy_asi.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  experimental:
+    name: Experimental x86 | ${{ matrix.renderer }}
+    runs-on: windows-2022
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        renderer: [d3d9, gl3_glfw]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: microsoft/setup-msbuild@v3
+        with:
+          vs-version: '[17.0,18.0)'
+      - name: Test local fixed-address fixtures, not external mods
+        shell: cmd
+        run: utils\legacy-asi\tests\build-and-test.cmd --run
+      - name: Test manifest loading in isolated processes
+        shell: pwsh
+        run: ./utils/legacy-asi/tests/loader_tests.ps1 -Run
+      - name: Test owned-child launcher and normal-loader TLS identity
+        shell: cmd
+        run: utils\legacy-asi\launcher\build-and-probe.cmd --run
+      - name: Generate isolated experimental build
+        shell: pwsh
+        run: |
+          ./premake5.exe --with-librw --with-legacy-asi --no-git-hash vs2022
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build experimental game
+        shell: pwsh
+        run: |
+          msbuild build/legacy-asi/reVC-legacy-asi.sln /m:1 /nr:false /p:Configuration=Release /p:Platform=win-x86-librw_${{ matrix.renderer }}-oal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v6
+        with:
+          name: EXPERIMENTAL_partial_ABI_x86_${{ matrix.renderer }}
+          path: bin/win-x86-librw_${{ matrix.renderer }}-oal-legacy/Release/
+          if-no-files-found: error

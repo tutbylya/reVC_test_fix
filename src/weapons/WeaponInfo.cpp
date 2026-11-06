@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 #include "main.h"
 #include "FileMgr.h"
@@ -153,7 +156,11 @@ CWeaponInfo::LoadWeaponData(void)
 	int lp, linelen;
 		
 	CFileMgr::SetDir("DATA");
+#ifdef MODLOADER
+	buflen = ModLoader_WeaponDat("WEAPON.DAT", work_buff, sizeof(work_buff), "r");
+#else
 	buflen = CFileMgr::LoadFile("WEAPON.DAT", work_buff, sizeof(work_buff), "r");
+#endif
 
 	for (bp = 0; bp < buflen; ) {
 		// read file line by line

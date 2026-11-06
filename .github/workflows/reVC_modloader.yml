@@ -1,0 +1,79 @@
+name: reVC native Mod Loader
+
+on:
+  pull_request:
+  push:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Build the optional runtime once per CPU architecture, not once per renderer
+# or game configuration. Release plugins also work with Debug game builds.
+jobs:
+  build:
+    name: Mod Loader | Release | ${{ matrix.architecture }}
+    runs-on: windows-2022
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [x86, x64]
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Add Visual Studio 2022 MSBuild to PATH
+        uses: microsoft/setup-msbuild@v3
+        with:
+          vs-version: '[17.0,18.0)'
+
+      - name: Build and package native reVC Mod Loader
+        shell: pwsh
+        run: ./utils/modloader/build.ps1 -Architecture '${{ matrix.architecture }}' -Jobs 2
+
+      - name: Test bounded resource parsing and native interface options
+        shell: cmd
+        run: utils\modloader\test-resource-parsers.cmd
+
+      - name: Verify the packaged plugin set
+        shell: pwsh
+        run: |
+          $package = 'build/modloader-dist/${{ matrix.architecture }}'
+          $pluginDirectory = Join-Path $package 'modloader/.data/plugins/gta3'
+          $expected = @('std.fx.dll', 'std.stream.dll', 'std.data.dll', 'std.text.dll', 'std.scm.dll', 'std.sprites.dll', 'std.movies.dll')
+          $actual = @(Get-ChildItem -LiteralPath $pluginDirectory -File -Force | ForEach-Object { $_.Name })
+          if (Compare-Object $expected $actual) { throw 'The package must contain exactly the seven supported reVC plugins.' }
+          foreach ($relative in @('modloader.asi', 'modloader/.data/LICENSE', 'modloader/.data/reVC-build.json')) {
+            if (!(Test-Path -LiteralPath (Join-Path $package $relative) -PathType Leaf)) {
+              throw "Package file missing: $relative"
+            }
+          }
+
+      - name: Upload optional Mod Loader runtime
+        uses: actions/upload-artifact@v6
+        with:
+          name: reVC_ModLoader_Release_${{ matrix.architecture }}
+          path: build/modloader-dist/${{ matrix.architecture }}/
+          # .data holds all seven plugins, configuration and license files.
+          include-hidden-files: true
+          if-no-files-found: error
+
+  resource-tests-linux:
+    name: Resource safety | Linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Test resource parsers without proprietary game assets
+        run: |
+          mkdir -p build/resource-parser-tests
+          g++ -std=c++17 -Wall -Wextra -Werror utils/modloader/test-resource-parsers.cpp -o build/resource-parser-tests/parsers
+          build/resource-parser-tests/parsers
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc/extras utils/tests/remastered_ui_tests.cpp src/extras/remastered_ui.cpp -o build/resource-parser-tests/native-ui
+          build/resource-parser-tests/native-ui

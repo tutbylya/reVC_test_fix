@@ -1,0 +1,120 @@
+diff --git a/include/modloader/modloader_reVC.h b/include/modloader/modloader_reVC.h
+index 18f0dd5..3cbe538 100644
+--- a/include/modloader/modloader_reVC.h
++++ b/include/modloader/modloader_reVC.h
+@@ -107,6 +107,15 @@ typedef struct {
+     const char* (*RegisterAndGetSplashFile_Unsafe)(const char* filepath);
+     const char* (*GetAnimFile_Unsafe)(const char* filepath);
+ 
++    // reVC reference ABI reserves these two file-open callback slots.
++    int32_t (*CFileMgr__OpenFile0)(const char* file, const char* mode);
++    int32_t (*CFileMgr__OpenFile1)(int* self, const char* file, const char* mode);
++
++    // reVC_test_fix extension: request cooperative streaming-worker shutdown.
++    // The host wakes and joins the worker before freeing its stream resources.
++    void (*StopCdStreamThread)();
++    void (*PrepareCdStreamThread)();
++
+ } modloader_reVC_callback_table_t;
+ 
+ typedef struct modloader_reVC_t {
+@@ -125,4 +134,4 @@ typedef struct modloader_reVC_t {
+ 
+ } modloader_reVC_t;
+ 
+-typedef int (*modloader_fInitFromREVC)(modloader_reVC_t*);
+\ No newline at end of file
++typedef int (*modloader_fInitFromREVC)(modloader_reVC_t*);
+diff --git a/src/core/folder.cpp b/src/core/folder.cpp
+index 7ffe286..cc3cedb 100644
+--- a/src/core/folder.cpp
++++ b/src/core/folder.cpp
+@@ -14,7 +14,10 @@ using namespace modloader;
+ void Loader::FolderInformation::Clear()
+ {
+     mods.clear();
+-    profiles.clear();
++    // Each Profile destructor removes its references from the remaining list.
++    // clear() destroys nodes before unlinking the whole list on MSVC, exposing
++    // already-destroyed profiles to that traversal. Unlink each node first.
++    RemoveProfiles();
+     current_profile = nullptr;
+ }
+ 
+diff --git a/src/plugins/gta3/std.stream/backend.cpp b/src/plugins/gta3/std.stream/backend.cpp
+index 0f23aef..b986f77 100644
+--- a/src/plugins/gta3/std.stream/backend.cpp
++++ b/src/plugins/gta3/std.stream/backend.cpp
+@@ -6,6 +6,7 @@
+  */
+ #include <stdinc.hpp>
+ #include "streaming.hpp"
++#include <atomic>
+ using namespace modloader;
+ 
+ extern "C"
+@@ -135,6 +136,23 @@ uint32_t CdStreamSync( int32_t streamID )
+  *  Streaming thread
+  *      This thread reads pieces from cd images and in mod loader on disk files
+  */
++static std::atomic<bool> reVCStreamStopRequested(false);
++
++static void PrepareREVCStreamThread()
++{
++    // Called by the host before CreateThread, not from the worker: an early
++    // shutdown request must never be overwritten when the worker is scheduled.
++    reVCStreamStopRequested.store(false, std::memory_order_release);
++}
++
++static void StopREVCStreamThread()
++{
++    reVCStreamStopRequested.store(true, std::memory_order_release);
++    const HANDLE semaphore = *modloader_reVC->reVC_addr_table->p_gCdStreamSema;
++    if (semaphore)
++        ReleaseSemaphore(semaphore, 1, nullptr);
++}
++
+ int __stdcall CdStreamThread()
+ {
+     HANDLE* pSemaphore = nullptr;
+@@ -163,7 +181,11 @@ int __stdcall CdStreamThread()
+         CAbstractStreaming::AbctFileHandle* sfile = nullptr;
+         
+         // Wait until there's something to be loaded...
+-        WaitForSingleObject(*pSemaphore, -1);
++        if (WaitForSingleObject(*pSemaphore, INFINITE) != WAIT_OBJECT_0)
++            break;
++        if (plugin_ptr->loader->game_id == MODLOADER_GAME_REVC &&
++            reVCStreamStopRequested.load(std::memory_order_acquire))
++            break;
+         
+         // Take the stream index from the queue
+         int i = GetFirstInQueue(pQueue);
+@@ -595,7 +617,12 @@ void CAbstractStreaming::Patch()
+         if(game_id == MODLOADER_GAME_RE3)
+             modloader_re3->callback_table->CdStreamThread = +[] { CdStreamThread(); };
+         else if(game_id == MODLOADER_GAME_REVC)
++        {
++            reVCStreamStopRequested.store(false, std::memory_order_release);
++            modloader_reVC->callback_table->StopCdStreamThread = StopREVCStreamThread;
++            modloader_reVC->callback_table->PrepareCdStreamThread = PrepareREVCStreamThread;
+             modloader_reVC->callback_table->CdStreamThread = +[] { CdStreamThread(); };
++        }
+         else
+             MakeJMP(0x406560, raw_ptr(CdStreamThread));
+ 
+diff --git a/src/translator/gta3/vc/reVC.hpp b/src/translator/gta3/vc/reVC.hpp
+index ecc797c..4dd08f0 100644
+--- a/src/translator/gta3/vc/reVC.hpp
++++ b/src/translator/gta3/vc/reVC.hpp
+@@ -92,7 +92,9 @@ static void VC_REVC(std::map<memory_pointer_raw, memory_pointer_raw>& map)
+         map[0x5B8AFC] = &vcemu_pMaxInfoForModel;// -> &ms_aInfoForModel[MAX_INFO_FOR_MODEL]
+         // DONT CHANGE THE FOLLOWING LINE, CHANGE THE MAPPING ABOVE INSTEAD!!! Maybe change the 0x14 sizeof /////////////
+ #ifdef _WIN64
+-        vcemu_pMaxInfoForModel = *mem_ptr(0x40D014).get<char*>() + (0x1C * *mem_ptr(xVc(0x4102B2)).get<uint32_t>());
++        // The host's native CStreamingInfo has 8-byte alignment and four bytes
++        // of tail padding; the plugin's packed view describes only its fields.
++        vcemu_pMaxInfoForModel = *mem_ptr(0x40D014).get<char*>() + (0x20 * *mem_ptr(xVc(0x4102B2)).get<uint32_t>());
+ #else
+         vcemu_pMaxInfoForModel = *mem_ptr(0x40D014).get<char*>() + (0x14 * *mem_ptr(xVc(0x4102B2)).get<uint32_t>());
+ #endif

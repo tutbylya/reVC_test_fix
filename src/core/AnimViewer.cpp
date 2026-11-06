@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 #include "Font.h"
 #include "Pad.h"
@@ -63,13 +66,21 @@ CAnimViewer::Initialise(void) {
 
 	// we need messages, messages needs hud, hud needs those
 	int hudSlot = CTxdStore::AddTxdSlot("hud");
+#ifdef MODLOADER
+	ModLoader_HudTxd(hudSlot, "MODELS/HUD.TXD");
+#else
 	CTxdStore::LoadTxd(hudSlot, "MODELS/HUD.TXD");
+#endif
 	CHud::m_Wants_To_Draw_Hud = false;
 
 	animTxdSlot = CTxdStore::AddTxdSlot("generic");
 	CTxdStore::Create(animTxdSlot);
 	int particleSlot = CTxdStore::AddTxdSlot("particle");
+#ifdef MODLOADER
+	ModLoader_ParticleTxd(particleSlot, "MODELS/PARTICLE.TXD");
+#else
 	CTxdStore::LoadTxd(particleSlot, "MODELS/PARTICLE.TXD");
+#endif
 	CTxdStore::SetCurrentTxd(animTxdSlot);
 	CPools::Initialise();
 	CReferences::Init();

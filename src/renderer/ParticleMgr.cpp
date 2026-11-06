@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 #include "main.h"
 #include "FileMgr.h"
@@ -24,7 +27,11 @@ void cParticleSystemMgr::Initialise()
 void cParticleSystemMgr::LoadParticleData()
 {
 	CFileMgr::SetDir("DATA");
+#ifdef MODLOADER
+	ModLoader_ParticleCfg(ParticleFilename, work_buff, ARRAY_SIZE(work_buff), "r");
+#else
 	CFileMgr::LoadFile(ParticleFilename, work_buff, ARRAY_SIZE(work_buff), "r");
+#endif
 	CFileMgr::SetDir("");
 	
 	tParticleSystemData *entry = nil;

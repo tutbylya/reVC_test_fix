@@ -37,6 +37,9 @@
 #include "Font.h"
 #include "Frontend.h"
 #include "VarConsole.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 bool CStreaming::ms_disableStreaming;
 bool CStreaming::ms_bLoadingBigModel;
@@ -203,7 +206,11 @@ CStreaming::Init2(void)
 	ms_loadedGangs = 0;
 	ms_currentPedLoading = NUMMODELSPERPEDGROUP;	// unused, whatever it is
 
+#ifdef MODLOADER
+	ModLoader_LoadCdDirectory();
+#else
 	LoadCdDirectory();
+#endif
 
 	// allocate streaming buffers
 	if(ms_streamingBufferSize & 1) ms_streamingBufferSize++;
@@ -393,7 +400,11 @@ CStreaming::LoadCdDirectory(void)
 	while(i-- >= 1){
 		strcpy(dirname, CdStreamGetImageName(i));
 		strncpy(strrchr(dirname, '.') + 1, "DIR", 3);
+#ifdef MODLOADER
+		ModLoader_FetchCdDirectory(dirname, i);
+#else
 		LoadCdDirectory(dirname, i);
+#endif
 	}
 
 	ms_lastImageRead = 0;
@@ -409,7 +420,11 @@ CStreaming::LoadCdDirectory(const char *dirname, int n)
 	char *dot;
 
 	lastID = -1;
+#ifdef MODLOADER
+	fd = CFileMgr::OpenFile(ModLoader_GetCdDirectoryPath_Unsafe(dirname), "rb");
+#else
 	fd = CFileMgr::OpenFile(dirname, "rb");
+#endif
 	assert(fd > 0);
 
 	imgSelector = n<<24;
@@ -478,6 +493,88 @@ CStreaming::LoadCdDirectory(const char *dirname, int n)
 
 	CFileMgr::CloseFile(fd);
 }
+
+#ifdef MODLOADER
+void
+CStreaming::LoadCdDirectoryUsingCallbacks(void *userData, int n,
+    bool (*readEntry)(void *, void *, uint32_t), bool (*registerEntry)(void *, void *, bool),
+    void (*registerSpecialEntry)(void *, void *))
+{
+	if(readEntry == nil) return;
+
+	int lastID = -1;
+	const uint32 imgSelector = uint32(n) << 24;
+	CDirectory::DirectoryInfo direntry;
+	static_assert(sizeof(direntry) == 32, "ModLoader expects 32-byte IMG directory entries");
+	while(readEntry(userData, &direntry, sizeof(direntry))) {
+		// Streaming buffers and model sizes use signed 32-bit sector counts.
+		if(direntry.size > INT32_MAX) {
+			debug("ModLoader: oversized IMG directory entry ignored\n");
+			lastID = -1;
+			continue;
+		}
+		if(direntry.size > uint32(ms_streamingBufferSize))
+			ms_streamingBufferSize = direntry.size;
+
+		direntry.name[23] = '\0';
+		char *dot = strchr(direntry.name, '.');
+		if(dot == nil || dot-direntry.name > 20) {
+			debug("%s is too long\n", direntry.name);
+			lastID = -1;
+			continue;
+		}
+		*dot = '\0';
+
+		int modelId = -1;
+		if(strncasecmp(dot+1, "DFF", 3) == 0) {
+			if(!CModelInfo::GetModelInfo(direntry.name, &modelId)) {
+				if(registerSpecialEntry) registerSpecialEntry(userData, &direntry);
+				uint32 unusedPos, unusedSize;
+				if(!ms_pExtraObjectsDir->FindItem(direntry.name, unusedPos, unusedSize)) {
+					if(ms_pExtraObjectsDir->numEntries < ms_pExtraObjectsDir->maxEntries) {
+#ifdef FIX_BUGS
+						ms_pExtraObjectsDir->AddItem(direntry, n);
+#else
+						ms_pExtraObjectsDir->AddItem(direntry);
+#endif
+					} else {
+						debug("ModLoader: extra object directory is full; %s ignored\n", direntry.name);
+					}
+				}
+				lastID = -1;
+				continue;
+			}
+		} else if(strncasecmp(dot+1, "TXD", 3) == 0) {
+			modelId = CTxdStore::FindTxdSlot(direntry.name);
+			if(modelId == -1) modelId = CTxdStore::AddTxdSlot(direntry.name);
+			if(modelId >= 0) modelId += STREAM_OFFSET_TXD;
+		} else if(strncasecmp(dot+1, "COL", 3) == 0) {
+			modelId = CColStore::FindColSlot(direntry.name);
+			if(modelId == -1) modelId = CColStore::AddColSlot(direntry.name);
+			if(modelId >= 0) modelId += STREAM_OFFSET_COL;
+		} else if(strncasecmp(dot+1, "IFP", 3) == 0) {
+			modelId = CAnimManager::RegisterAnimBlock(direntry.name);
+			if(modelId >= 0) modelId += STREAM_OFFSET_ANIM;
+		}
+		if(modelId < 0 || modelId >= NUMSTREAMINFO) {
+			lastID = -1;
+			continue;
+		}
+
+		bool hadModel = ms_aInfoForModel[modelId].GetCdSize() != 0;
+		if(registerEntry) hadModel = registerEntry(userData, &ms_aInfoForModel[modelId], hadModel);
+		if(hadModel) {
+			debug("%s appears more than once\n", direntry.name);
+			lastID = -1;
+		} else {
+			direntry.offset |= imgSelector;
+			ms_aInfoForModel[modelId].SetCdPosnAndSize(direntry.offset, direntry.size);
+			if(lastID != -1) ms_aInfoForModel[lastID].m_nextID = modelId;
+			lastID = modelId;
+		}
+	}
+}
+#endif
 
 static char*
 GetObjectName(int streamId)
@@ -1048,6 +1145,9 @@ CStreaming::RequestSpecialModel(int32 modelId, const char *modelName, int32 flag
 	else
 		mi->SetTexDictionary(modelName);
 	ms_aInfoForModel[modelId].SetCdPosnAndSize(pos, size);
+#ifdef MODLOADER
+	ModLoader_OnRequestSpecialModel(modelId, modelName, pos, size);
+#endif
 	RequestModel(modelId, flags);
 }
 
@@ -2110,6 +2210,10 @@ CStreaming::RequestModelStream(int32 ch)
 	if(streamId == -1)
 		return;
 
+#ifdef MODLOADER
+	// This may restore a missing mod's stock IMG position and size.
+	ModLoader_RegisterNextModelRead(streamId);
+#endif
 	ms_aInfoForModel[streamId].GetCdPosnAndSize(posn, size);
 	if(size > (uint32)ms_streamingBufferSize){
 		// Can only load big models on channel 0, and 1 has to be idle
@@ -2175,7 +2279,11 @@ CStreaming::RequestModelStream(int32 ch)
 		ms_channel[ch].streamIds[i] = -1;
 	// Now read the data
 	assert(!(ms_bLoadingBigModel && ch == 1));	// this would clobber the buffer
+#ifdef MODLOADER
+	if(ModLoader_CdStreamRead(ch, ms_pStreamingBuffer[ch], imgOffset+posn, totalSize) == STREAM_NONE)
+#else
 	if(CdStreamRead(ch, ms_pStreamingBuffer[ch], imgOffset+posn, totalSize) == STREAM_NONE)
+#endif
 		debug("FUCKFUCKFUCK\n");
 	ms_channel[ch].state = CHANNELSTATE_READING;
 	ms_channel[ch].field24 = 0;
@@ -2276,7 +2384,13 @@ CStreaming::RetryLoadFile(int32 ch)
 		ms_channel[ch].numTries++;
 		if (CdStreamGetStatus(ch) == STREAM_READING || CdStreamGetStatus(ch) == STREAM_WAITING) break;
 	case CHANNELSTATE_IDLE:
+#ifdef MODLOADER
+		if(ms_channel[ch].streamIds[0] >= 0)
+			ModLoader_RegisterNextModelRead(ms_channel[ch].streamIds[0]);
+		ModLoader_CdStreamRead(ch, ms_pStreamingBuffer[ch], ms_channel[ch].position, ms_channel[ch].size);
+#else
 		CdStreamRead(ch, ms_pStreamingBuffer[ch], ms_channel[ch].position, ms_channel[ch].size);
+#endif
 		ms_channel[ch].state = CHANNELSTATE_READING;
 		ms_channel[ch].field24 = -600;
 		break;
@@ -2473,10 +2587,19 @@ CStreaming::LoadAllRequestedModels(bool priority)
 		ms_channel[0].streamIds[0] = streamId;
 		DecrementRef(streamId);
 
+#ifdef MODLOADER
+		ModLoader_RegisterNextModelRead(streamId);
+#endif
 		if(ms_aInfoForModel[streamId].GetCdPosnAndSize(posn, size)){
-			do
+			do {
+#ifdef MODLOADER
+				ModLoader_RegisterNextModelRead(streamId);
+				ms_aInfoForModel[streamId].GetCdPosnAndSize(posn, size);
+				status = ModLoader_CdStreamRead(0, ms_pStreamingBuffer[0], imgOffset+posn, size);
+#else
 				status = CdStreamRead(0, ms_pStreamingBuffer[0], imgOffset+posn, size);
-			while(CdStreamSync(0) || status == STREAM_NONE);
+#endif
+			} while(CdStreamSync(0) || status == STREAM_NONE);
 			ms_aInfoForModel[streamId].m_loadState = STREAMSTATE_READING;
 
 			MakeSpaceFor(size * CDSTREAM_SECTOR_SIZE);

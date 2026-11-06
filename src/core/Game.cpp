@@ -74,6 +74,10 @@
 #include "TrafficLights.h"
 #include "Train.h"
 #include "TxdStore.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
+#include "legacy_asi.h"
 #include "User.h"
 #include "VisibilityPlugins.h"
 #include "WaterCannon.h"
@@ -171,6 +175,13 @@ bool
 CGame::InitialiseOnceBeforeRW(void)
 {
 	CFileMgr::Initialise();
+#ifdef REVC_LEGACY_ASI
+	if (!LegacyAsi::Initialize())
+		return false;
+#endif
+#ifdef MODLOADER
+	ModLoader_Init();
+#endif
 	CdStreamInit(MAX_CDCHANNELS);
 	debug("size of matrix %d\n", sizeof(CMatrix));
 	debug("size of placeable %d\n", sizeof(CPlaceable));
@@ -410,7 +421,11 @@ bool CGame::Initialise(const char* datFile)
 
 	LoadingScreen("Loading the Game", "Loading particles", nil);
 	int particleTxdSlot = CTxdStore::AddTxdSlot("particle");
+#ifdef MODLOADER
+	ModLoader_ParticleTxd(particleTxdSlot, "MODELS/PARTICLE.TXD");
+#else
 	CTxdStore::LoadTxd(particleTxdSlot, "MODELS/PARTICLE.TXD");
+#endif
 	CTxdStore::AddRef(particleTxdSlot);
 	CTxdStore::SetCurrentTxd(gameTxdSlot);
 	LoadingScreen("Loading the Game", "Setup game variables", nil);

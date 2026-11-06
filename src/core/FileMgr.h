@@ -10,6 +10,8 @@ public:
 	static void ChangeDir(const char *dir);
 	static void SetDir(const char *dir);
 	static void SetDirMyDocuments(void);
+	// maxlen includes the trailing NUL. Oversized files fail with -1, never a
+	// partial success; text mode retains the existing CRLF translation.
 	static ssize_t LoadFile(const char *file, uint8 *buf, int maxlen, const char *mode);
 	static int OpenFile(const char *file, const char *mode);
 	static int OpenFile(const char *file) { return OpenFile(file, "rb"); }

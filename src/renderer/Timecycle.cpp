@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 #include "main.h"
 #include "Clock.h"
@@ -162,7 +165,11 @@ CTimeCycle::Initialise(void)
 	debug("Intialising CTimeCycle...\n");
 
 	CFileMgr::SetDir("DATA");
+#ifdef MODLOADER
+	ModLoader_TimecycleDat("TIMECYC.DAT", work_buff, sizeof(work_buff), "rb");
+#else
 	CFileMgr::LoadFile("TIMECYC.DAT", work_buff, sizeof(work_buff), "rb");
+#endif
 	CFileMgr::SetDir("");
 
 	line[0] = '\0';

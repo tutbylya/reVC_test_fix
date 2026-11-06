@@ -14,6 +14,9 @@
 #include "ControllerConfig.h"
 #include "CutsceneMgr.h"
 #include "Pad.h"
+#ifdef REVC_LEGACY_ASI
+#include "legacy_asi_input.h"
+#endif
 #include "Frontend.h"
 #include "Game.h"
 #include "General.h"
@@ -1518,8 +1521,14 @@ CCam::Process_FollowPedWithMouse(const CVector &CameraTarget, float TargetOrient
 			LookLeftRight = -2.5f*MouseX;
 			LookUpDown = 4.0f*MouseY;
 		}else{
+#ifdef REVC_LEGACY_ASI
+			// Original FollowPedWithMouse's stick fallback (0x47BE94).
+			LookLeftRight = -LegacyAsi::OriginalLookLeftRight(CPad::GetPad(0), 0x47C062);
+			LookUpDown = LegacyAsi::OriginalLookUpDown(CPad::GetPad(0), 0x47C082);
+#else
 			LookLeftRight = -CPad::GetPad(0)->LookAroundLeftRight();
 			LookUpDown = CPad::GetPad(0)->LookAroundUpDown();
+#endif
 		}
 		if(UseMouse){
 			BetaOffset = LookLeftRight * TheCamera.m_fMouseAccelHorzntl * FOV/80.0f;
@@ -2766,8 +2775,14 @@ CCam::Process_1stPerson(const CVector &CameraTarget, float TargetOrientation, fl
 		}
 
 		float LookLeftRight, LookUpDown;
+#ifdef REVC_LEGACY_ASI
+		// Original first-person head-position camera (0x48267A).
+		LookLeftRight = -LegacyAsi::OriginalLookLeftRight(CPad::GetPad(0), 0x482935);
+		LookUpDown = LegacyAsi::OriginalLookUpDown(CPad::GetPad(0), 0x482955);
+#else
 		LookLeftRight = -CPad::GetPad(0)->LookAroundLeftRight();
 		LookUpDown = CPad::GetPad(0)->LookAroundUpDown();
+#endif
 		float xdir = LookLeftRight < 0.0f ? -1.0f : 1.0f;
 		float ydir = LookUpDown < 0.0f ? -1.0f : 1.0f;
 		Beta += SQR(LookLeftRight/100.0f)*xdir*0.8f/14.0f * FOV/80.0f * CTimer::GetTimeStep();
@@ -2976,8 +2991,14 @@ CCam::Process_1rstPersonPedOnPC(const CVector&, float TargetOrientation, float, 
 		}else
 #endif
 		{
+#ifdef REVC_LEGACY_ASI
+			// Original PC first-person's mouse/stick branch (0x481AB3).
+			LookLeftRight = -LegacyAsi::OriginalLookLeftRight(CPad::GetPad(0), 0x481F35);
+			LookUpDown = LegacyAsi::OriginalLookUpDown(CPad::GetPad(0), 0x481F55);
+#else
 			LookLeftRight = -CPad::GetPad(0)->LookAroundLeftRight();
 			LookUpDown = CPad::GetPad(0)->LookAroundUpDown();
+#endif
 		}
 #ifdef IMPROVED_MENU_AND_INPUT
 		Beta += LookLeftRight * TheCamera.m_fMouseAccelHorzntl * FOV / 80.0f;

@@ -1,10 +1,14 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 #include "Camera.h"
 #include "DMAudio.h"
 #include "Clock.h"
 #include "Darkel.h"
 #include "Hud.h"
+#include "remastered_ui.h"
 #include "Messages.h"
 #include "Frontend.h"
 #include "Font.h"
@@ -432,7 +436,7 @@ if (DrawCrossHairPC && TheCamera.Cams[TheCamera.ActiveCam].Using3rdPersonMouseCa
 			m_LastDisplayScore = CWorld::Players[CWorld::PlayerInFocus].m_nVisibleMoney;
 		}
 		if (m_DisplayScoreState != FADED_OUT) {
-			sprintf(sTemp, "$%08d", CWorld::Players[CWorld::PlayerInFocus].m_nVisibleMoney);
+			RemasteredUI::FormatMoney(sTemp, sizeof(sTemp), CWorld::Players[CWorld::PlayerInFocus].m_nVisibleMoney);
 			AsciiToUnicode(sTemp, sPrint);
 
 			CFont::SetPropOff();
@@ -1713,7 +1717,11 @@ void CHud::ReloadTXD()
 	debug("Reloading HUD.TXD...\n");
 
 	HudTXD = CTxdStore::AddTxdSlot("hud");
+#ifdef MODLOADER
+	ModLoader_HudTxd(HudTXD, "MODELS/HUD.TXD");
+#else
 	CTxdStore::LoadTxd(HudTXD, "MODELS/HUD.TXD");
+#endif
 	CTxdStore::AddRef(HudTXD);
 	CTxdStore::PopCurrentTxd();
 	CTxdStore::SetCurrentTxd(HudTXD);
@@ -1730,7 +1738,11 @@ void CHud::Initialise()
 	m_Wants_To_Draw_3dMarkers = true;
 
 	int HudTXD = CTxdStore::AddTxdSlot("hud");
+#ifdef MODLOADER
+	ModLoader_HudTxd(HudTXD, "MODELS/HUD.TXD");
+#else
 	CTxdStore::LoadTxd(HudTXD, "MODELS/HUD.TXD");
+#endif
 	CTxdStore::AddRef(HudTXD);
 	CTxdStore::PopCurrentTxd();
 	CTxdStore::SetCurrentTxd(HudTXD);

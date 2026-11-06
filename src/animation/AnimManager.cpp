@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 #include "General.h"
 #include "RwHelper.h"
@@ -1364,7 +1367,11 @@ CAnimManager::BlendAnimation(RpClump *clump, AssocGroupId groupId, AnimationId a
 void
 CAnimManager::LoadAnimFiles(void)
 {
+#ifdef MODLOADER
+	LoadAnimFile(ModLoader_GetAnimFile_Unsafe("ANIM\\PED.IFP"));
+#else
 	LoadAnimFile("ANIM\\PED.IFP");
+#endif
 	ms_aAnimAssocGroups = new CAnimBlendAssocGroup[NUM_ANIM_ASSOC_GROUPS];
 	CreateAnimAssocGroups();
 }
@@ -1400,7 +1407,11 @@ void
 CAnimManager::LoadAnimFile(const char *filename)
 {
 	RwStream *stream;
+#ifdef MODLOADER
+	stream = (RwStream*)ModLoader_AnimFile(rwSTREAMFILENAME, rwSTREAMREAD, filename);
+#else
 	stream = RwStreamOpen(rwSTREAMFILENAME, rwSTREAMREAD, filename);
+#endif
 	assert(stream);
 	LoadAnimFile(stream, true);
 	RwStreamClose(stream, nil);

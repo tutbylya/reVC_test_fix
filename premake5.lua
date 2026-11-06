@@ -47,6 +47,22 @@ newoption {
 	description = "Build and use discord-rpc from this solution"
 }
 
+newoption {
+	trigger     = "no-modloader",
+	description = "Disable optional Mod Loader resource support"
+}
+
+newoption {
+	trigger     = "with-legacy-asi",
+	description = "Build the experimental Windows x86 original-ASI compatibility target"
+}
+
+local legacyAsi = _OPTIONS["with-legacy-asi"] ~= nil
+local legacySuffix = legacyAsi and "-legacy" or ""
+if legacyAsi and os.target() ~= "windows" then
+	error("--with-legacy-asi requires Windows x86; native x64/Linux and WGPU are not supported")
+end
+
 require("autoconf")
 
 if(_OPTIONS["with-librw"]) then
@@ -79,14 +95,20 @@ function getarch(a)
 	return a
 end
 
-workspace "reVC"
+workspace (legacyAsi and "reVC-legacy-asi" or "reVC")
 	language "C++"
 	cppdialect "C++23"
 	configurations { "Debug", "Release" }
 	startproject "reVC"
-	location "build"
+	location (legacyAsi and "build/legacy-asi" or "build")
+	if legacyAsi then
+		objdir "build/legacy-asi/obj/%{cfg.platform}/%{cfg.buildcfg}/%{prj.name}"
+	end
 	symbols "Full"
 	staticruntime "off"
+	if _OPTIONS["no-modloader"] then
+		defines { "REVC_NO_MODLOADER" }
+	end
 
 	if _OPTIONS["with-asan"] then
 		buildoptions { "-fsanitize=address -g3 -fno-omit-frame-pointer" }
@@ -94,18 +116,27 @@ workspace "reVC"
 	end
 
 	filter { "system:windows" }
-		configurations { "Vanilla" }
-		platforms {
-			"win-x86-RW34_d3d8-mss",
-			"win-x86-librw_d3d9-mss",
-			"win-x86-librw_gl3_glfw-mss",
-			"win-x86-RW34_d3d8-oal",
-			"win-x86-librw_d3d9-oal",
-			"win-x86-librw_gl3_glfw-oal",
-			"win-amd64-librw_d3d9-oal",
-			"win-amd64-librw_gl3_glfw-oal",
-			"win-amd64-librw_wgpu-oal",
-		}
+		if legacyAsi then
+			-- A separate solution prevents enabling the ABI in x64, WGPU, or
+			-- native Unix configurations by accidentally choosing a platform.
+			platforms {
+				"win-x86-librw_d3d9-oal",
+				"win-x86-librw_gl3_glfw-oal",
+			}
+		else
+			configurations { "Vanilla" }
+			platforms {
+				"win-x86-RW34_d3d8-mss",
+				"win-x86-librw_d3d9-mss",
+				"win-x86-librw_gl3_glfw-mss",
+				"win-x86-RW34_d3d8-oal",
+				"win-x86-librw_d3d9-oal",
+				"win-x86-librw_gl3_glfw-oal",
+				"win-amd64-librw_d3d9-oal",
+				"win-amd64-librw_gl3_glfw-oal",
+				"win-amd64-librw_wgpu-oal",
+			}
+		end
 
 	filter { "system:linux" }
 		platforms {
@@ -221,7 +252,7 @@ if(_OPTIONS["with-librw"]) then
 project "librw"
 	kind "StaticLib"
 	targetname "rw"
-	targetdir(path.join(Librw, "lib/%{cfg.platform}/%{cfg.buildcfg}"))
+	targetdir(path.join(Librw, "lib/%{cfg.platform}" .. legacySuffix .. "/%{cfg.buildcfg}"))
 	files { path.join(Librw, "src/*.*") }
 	files { path.join(Librw, "src/*/*.*") }
 	files { path.join(Librw, "src/gl/*/*.*") }
@@ -307,9 +338,16 @@ local function addSrcFiles( prefix )
 end
 
 project "reVC"
-	kind "WindowedApp"
-	targetname "reVC"
-	targetdir "bin/%{cfg.platform}/%{cfg.buildcfg}"
+	kind (legacyAsi and "SharedLib" or "WindowedApp")
+	targetname (legacyAsi and "reVC-core" or "reVC")
+	targetdir ("bin/%{cfg.platform}" .. legacySuffix .. "/%{cfg.buildcfg}")
+	if legacyAsi then
+		defines { "REVC_LEGACY_ASI", "REVC_LEGACY_ASI_CORE_DLL" }
+		dependson { "legacy-launcher", "legacy-bootstrap" }
+		-- Leave the original VC address region free for the checked ABI arena.
+		-- ASLR remains enabled; the runtime still validates the reservation.
+		linkoptions { "/BASE:0x20000000" }
+	end
 
 	if(_OPTIONS["with-librw"]) then
 		dependson "librw"
@@ -346,7 +384,13 @@ project "reVC"
 	files { addSrcFiles("src/weapons") }
 	files { addSrcFiles("src/extras") }
 	if(not _OPTIONS["no-git-hash"]) then
-		files { "src/extras/GitSHA1.cpp" } -- this won't be in repo in first build
+		if legacyAsi then
+			-- Do not regenerate the normal build's shared source file.
+			removefiles { "src/extras/GitSHA1.cpp" }
+			files { "build/legacy-asi/GitSHA1.cpp" }
+		else
+			files { "src/extras/GitSHA1.cpp" } -- this won't be in repo in first build
+		end
 	else
 		removefiles { "src/extras/GitSHA1.cpp" } -- but it will be everytime after
 	end
@@ -406,7 +450,7 @@ project "reVC"
 		defines { "AUDIO_OAL" }
 
 	filter {}
-	if(os.getenv("GTA_VC_RE_DIR")) then
+	if(not legacyAsi and os.getenv("GTA_VC_RE_DIR")) then
 		setpaths(os.getenv("GTA_VC_RE_DIR") .. "/", "%(cfg.buildtarget.name)")
 	end
 
@@ -416,7 +460,7 @@ project "reVC"
 		buildoptions { "/Zc:sizedDealloc-" }
 		linkoptions "/SAFESEH:NO"
 		characterset ("MBCS")
-		targetextension ".exe"
+		targetextension (legacyAsi and ".dll" or ".exe")
 		if(_OPTIONS["no-full-paths"]) then
 			usefullpaths "off"
 			linkoptions "/PDBALTPATH:%_PDB%"
@@ -426,7 +470,13 @@ project "reVC"
 			staticruntime "on"
 		end
 		if(not _OPTIONS["no-git-hash"]) then
-			prebuildcommands { '"%{prj.location}..\\printHash.bat" "%{prj.location}..\\src\\extras\\GitSHA1.cpp"' }
+			if legacyAsi then
+				prebuildcommands {
+					'"' .. path.getabsolute("printHash.bat") .. '" "' .. path.getabsolute("build/legacy-asi/GitSHA1.cpp") .. '"'
+				}
+			else
+				prebuildcommands { '"%{prj.location}..\\printHash.bat" "%{prj.location}..\\src\\extras\\GitSHA1.cpp"' }
+			end
 		end
 
 	filter "platforms:not win*"
@@ -506,7 +556,7 @@ project "reVC"
 		includedirs { "src/fakerw" }
 		includedirs { Librw }
 		if(_OPTIONS["with-librw"]) then
-			libdirs { "vendor/librw/lib/%{cfg.platform}/%{cfg.buildcfg}" }
+			libdirs { "vendor/librw/lib/%{cfg.platform}" .. legacySuffix .. "/%{cfg.buildcfg}" }
 		end
 		links { "rw" }
 
@@ -564,3 +614,37 @@ project "reVC"
 		includedirs {"/usr/local/include" }
 		libdirs { "/opt/local/lib" }
 		libdirs { "/usr/local/lib" }
+
+	filter {}
+
+if legacyAsi then
+project "legacy-bootstrap"
+	kind "WindowedApp"
+	language "C++"
+	cppdialect "C++20"
+	targetname "reVC-game"
+	targetdir ("bin/%{cfg.platform}-legacy/%{cfg.buildcfg}")
+	staticruntime "on"
+	characterset "Unicode"
+	defines { "REVC_LEGACY_ASI" }
+	files { "utils/legacy-asi/launcher/bootstrap.cpp", "utils/legacy-asi/launcher/bootstrap_entry.cpp",
+		"src/extras/legacy_asi_identity.cpp", "src/extras/legacy_asi_arena_protocol.h" }
+	-- Fixed addresses are an explicit original-ABI requirement for this tiny
+	-- opt-in image only. Never change machine policies or normal game targets.
+	linkoptions { "/BASE:0x400000", "/FIXED", "/DYNAMICBASE:NO", "/INCREMENTAL:NO", "/ENTRY:LegacyBootstrapEntry" }
+	filter "files:**bootstrap_entry.cpp"
+		buildoptions { "/GS-", "/JMC-" }
+		flags { "NoRuntimeChecks" }
+	filter {}
+project "legacy-launcher"
+	kind "WindowedApp"
+	language "C++"
+	cppdialect "C++20"
+	targetname "reVC"
+	targetdir ("bin/%{cfg.platform}-legacy/%{cfg.buildcfg}")
+	staticruntime "on"
+	characterset "Unicode"
+	files { "utils/legacy-asi/launcher/launcher.cpp", "utils/legacy-asi/launcher/debug_tls.cpp",
+		"utils/legacy-asi/launcher/debug_tls.h", "src/extras/legacy_asi_arena_protocol.h" }
+	links { "shell32", "user32" }
+end

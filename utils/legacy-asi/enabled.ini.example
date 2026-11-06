@@ -1,0 +1,6 @@
+; Experimental vc10-scalars-v1 only. No third-party ASI is certified yet.
+; UTF-8. Flat filenames only, at most 32 modules.
+; A SHA-256 pins identity, not ABI compatibility or safety.
+; Do not enable Amazing Snapshot: camera/RenderWare ABI is not implemented.
+[Modules]
+; ReviewedMod.asi=REPLACE_WITH_64_HEXADECIMAL_SHA256_DIGITS

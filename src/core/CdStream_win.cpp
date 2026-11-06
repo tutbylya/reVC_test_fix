@@ -4,6 +4,9 @@
 
 #include "CdStream.h"
 #include "MemoryMgr.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 struct CdReadInfo
 {
@@ -30,6 +33,7 @@ HANDLE gImgFiles[MAX_CDIMAGES];
 HANDLE _gCdStreamThread;
 HANDLE gCdStreamSema; // released when we have new thing to read(so channel is set)
 DWORD _gCdStreamThreadId;
+static volatile LONG gCdStreamStopRequested;
 
 CdReadInfo *gpReadInfo;
 Queue gChannelRequestQ;
@@ -81,6 +85,10 @@ CdStreamInitThread(void)
 		return;
 	}
 	
+	InterlockedExchange(&gCdStreamStopRequested, 0);
+#ifdef MODLOADER
+	ModLoader_PrepareCdStreamThread();
+#endif
 	_gCdStreamThread = CreateThread(nil, 64*1024/*64KB*/, CdStreamThread, nil, CREATE_SUSPENDED, &_gCdStreamThreadId);
 	
 	if ( _gCdStreamThread == nil )
@@ -176,15 +184,37 @@ CdStreamShutdown(void)
 {
 	if ( _gbCdStreamAsync )
 	{
+		if (_gCdStreamThread != nil) {
+			// Finish reads before asking either the native or ModLoader worker to exit.
+			for (int32 i = 0; i < gNumChannels; i++)
+				CdStreamSync(i);
+			InterlockedExchange(&gCdStreamStopRequested, 1);
+#ifdef MODLOADER
+			ModLoader_StopCdStreamThread();
+#endif
+			ReleaseSemaphore(gCdStreamSema, 1, nil);
+			WaitForSingleObject(_gCdStreamThread, INFINITE);
+			CloseHandle(_gCdStreamThread);
+			_gCdStreamThread = nil;
+		}
+
+		// The worker must no longer access these objects when they are released.
 		LocalFree(gChannelRequestQ.items);
-		CloseHandle(gCdStreamSema);
-		CloseHandle(_gCdStreamThread);
+		gChannelRequestQ.items = nil;
+		if (gCdStreamSema != nil) {
+			CloseHandle(gCdStreamSema);
+			gCdStreamSema = nil;
+		}
 		
 		for ( int32 i = 0; i < gNumChannels; i++ )
-			CloseHandle(gpReadInfo[i].pDoneSemaphore);
+			if (gpReadInfo[i].pDoneSemaphore != nil)
+				CloseHandle(gpReadInfo[i].pDoneSemaphore);
+		_gbCdStreamAsync = FALSE;
 	}
 	
 	LocalFree(gpReadInfo);
+	gpReadInfo = nil;
+	gNumChannels = 0;
 }
 
 
@@ -199,6 +229,11 @@ CdStreamRead(int32 channel, void *buffer, uint32 offset, uint32 size)
 	
 	ASSERT( _GET_INDEX(offset) < MAX_CDIMAGES );
 	HANDLE hImage = gImgFiles[_GET_INDEX(offset)];
+#ifdef MODLOADER
+	HANDLE hCustomFile = (HANDLE)ModLoader_AcquireNextModelFileHandle();
+	if(hCustomFile != INVALID_HANDLE_VALUE && hCustomFile != nil)
+		hImage = hCustomFile;
+#endif
 	ASSERT( hImage != nil );
 	
 	
@@ -394,12 +429,19 @@ DWORD
 WINAPI CdStreamThread(LPVOID lpThreadParameter)
 {
 	debug("Created cdstream thread\n");
+#ifdef MODLOADER
+	if(ModLoader_CdStreamThread()) return 0;
+#endif
 	
-	while ( true )
+	while (InterlockedCompareExchange(&gCdStreamStopRequested, 0, 0) == 0)
 	{
-		WaitForSingleObject(gCdStreamSema, INFINITE);
+		if (WaitForSingleObject(gCdStreamSema, INFINITE) != WAIT_OBJECT_0 ||
+		    InterlockedCompareExchange(&gCdStreamStopRequested, 0, 0) != 0)
+			break;
 		
 		int32 channel = GetFirstInQueue(&gChannelRequestQ);
+		if (channel < 0)
+			continue;
 		ASSERT( channel < gNumChannels );
 		
 		CdReadInfo *pChannel = &gpReadInfo[channel];
@@ -472,6 +514,7 @@ WINAPI CdStreamThread(LPVOID lpThreadParameter)
 		
 		pChannel->bReading = false;
 	}
+	return 0;
 }
 
 bool
@@ -479,10 +522,16 @@ CdStreamAddImage(char const *path)
 {
 	ASSERT(path != nil);
 	ASSERT(gNumImages < MAX_CDIMAGES);
+	if (path == nil || gNumImages >= MAX_CDIMAGES || strlen(path) >= sizeof(gCdImageNames[0]))
+		return false;
 	
 	SetLastError(0);
 	
+#ifdef MODLOADER
+	gImgFiles[gNumImages] = CreateFile(ModLoader_GetCdStreamPath_Unsafe(path),
+#else
 	gImgFiles[gNumImages] = CreateFile(path,
+#endif
 	                                   GENERIC_READ,
 	                                   FILE_SHARE_READ,
 	                                   nil,
@@ -490,9 +539,10 @@ CdStreamAddImage(char const *path)
 	                                   _gdwCdStreamFlags | FILE_FLAG_RANDOM_ACCESS | FILE_ATTRIBUTE_READONLY,
 	                                   nil);
 	
-	ASSERT( gImgFiles[gNumImages] != nil );
-	if ( gImgFiles[gNumImages] == NULL )
+	if (gImgFiles[gNumImages] == INVALID_HANDLE_VALUE || gImgFiles[gNumImages] == nil) {
+		gImgFiles[gNumImages] = nil;
 		return false;
+	}
 	
 	strcpy(gCdImageNames[gNumImages], path);
 	

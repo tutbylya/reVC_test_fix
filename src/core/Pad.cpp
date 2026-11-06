@@ -13,6 +13,9 @@
 #endif
 
 #include "Pad.h"
+#ifdef REVC_LEGACY_ASI
+#include "legacy_asi_input.h"
+#endif
 #include "ControllerConfig.h"
 #include "Timer.h"
 #include "Frontend.h"
@@ -1792,7 +1795,11 @@ void CPad::UpdatePads(void)
 #else
 	bool bUpdate = true;
 
+#ifdef REVC_LEGACY_ASI
+	LegacyAsi::UpdateOriginalMouse(); // original VC 1.0 CALL at 0x4AB6CA
+#else
 	GetPad(0)->UpdateMouse();
+#endif
 #ifdef XINPUT
 	GetPad(0)->AffectFromXinput(m_bMapPadOneToPadTwo ? 1 : 0);
 	GetPad(1)->AffectFromXinput(m_bMapPadOneToPadTwo ? 0 : 1);
@@ -3517,6 +3524,11 @@ bool CPad::PrevStationJustDown(void)
 
 bool CPad::CycleWeaponLeftJustDown(void)
 {
+#ifdef REVC_LEGACY_ASI
+	int originalResult;
+	if (LegacyAsi::TryPadCycle(this, false, originalResult))
+		return originalResult != 0;
+#endif
 	if ( ArePlayerControlsDisabled() )
 		return false;
 
@@ -3544,6 +3556,11 @@ bool CPad::CycleWeaponLeftJustDown(void)
 
 bool CPad::CycleWeaponRightJustDown(void)
 {
+#ifdef REVC_LEGACY_ASI
+	int originalResult;
+	if (LegacyAsi::TryPadCycle(this, true, originalResult))
+		return originalResult != 0;
+#endif
 	if ( ArePlayerControlsDisabled() )
 		return false;
 

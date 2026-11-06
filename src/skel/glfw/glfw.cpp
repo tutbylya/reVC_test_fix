@@ -60,6 +60,10 @@ long _dwOperatingSystemVersion;
 #include "Text.h"
 #include "Timer.h"
 #include "main.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
+#include "legacy_asi.h"
 
 // This is defined on project-level, via premake5 or cmake
 #ifdef GET_KEYBOARD_INPUT_FROM_X11
@@ -930,6 +934,12 @@ ApplyGLFWWindowMode(const RwVideoMode &vm)
 		return true;
 	}
 	glfwGetError(nil);
+	#if defined(_WIN32) && defined(RW_WGPU)
+	// GLFW's default fullscreen focus handler iconifies synchronously inside
+	// WM_KILLFOCUS, which can re-enter DXGI/WGPU while it owns a surface image.
+	// Keep that transition in MinimizeInactiveFullscreenWindow's main-loop path.
+	glfwSetWindowAttrib(window, GLFW_AUTO_ICONIFY, GLFW_FALSE);
+	#endif
 	bool wayland = false;
 #ifdef GLFW_PLATFORM_WAYLAND
 	wayland = glfwGetPlatform() == GLFW_PLATFORM_WAYLAND;
@@ -1212,6 +1222,10 @@ psSelectDevice()
 #ifdef IMPROVED_VIDEOMODE
 	glfwWindowHint(GLFW_DECORATED, FrontEndMenuManager.m_nPrefsWindowed == WINDOWMODE_WINDOWED ? GLFW_TRUE : GLFW_FALSE);
 	glfwWindowHint(GLFW_FLOATING, GLFW_FALSE);
+#endif
+#if defined(_WIN32) && defined(RW_WGPU)
+	// Apply the policy before librw creates the GLFW window, including startup.
+	glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_FALSE);
 #endif
 #ifdef IMPROVED_VIDEOMODE
 	if(!RwEngineSetVideoMode(engineVideoMode)) { return FALSE; }
@@ -2233,6 +2247,9 @@ SetGameWorkingDirectory(void)
 int PASCAL
 WinMain(HINSTANCE instance, HINSTANCE prevInstance __RWUNUSED__, CMDSTR cmdLine, int cmdShow)
 {
+#ifdef REVC_LEGACY_ASI
+	if (!LegacyAsi::ReserveAddressSpace()) return 1;
+#endif
 	SetGameWorkingDirectory();
 	RwInt32 argc;
 	RwChar **argv;
@@ -2251,6 +2268,10 @@ WinMain(HINSTANCE instance, HINSTANCE prevInstance __RWUNUSED__, CMDSTR cmdLine,
 int
 main(int argc, char *argv[])
 {
+#ifdef MODLOADER
+	// Linux has no WinMain show-state argument; movie wrappers ignore it.
+	const int cmdShow = 0;
+#endif
 #endif
 	SetGameWorkingDirectory();
 	RwV2d pos;
@@ -2278,6 +2299,9 @@ main(int argc, char *argv[])
 	 * Initialize the platform independent data.
 	 * This will in turn initialize the platform specific data...
 	 */
+#ifdef MODLOADER
+	ModLoaderContext modloaderContext;
+#endif
 	if(RsEventHandler(rsINITIALIZE, nil) == rsEVENTERROR) { return FALSE; }
 
 #ifdef _WIN32
@@ -2496,7 +2520,11 @@ main(int argc, char *argv[])
 				}
 
 				case GS_INIT_LOGO_MPEG: {
+#ifdef MODLOADER
+					ModLoader_PlayMovieInWindow_Logo(cmdShow, "movies/Logo.mpg");
+#else
 					MoviePlayer::Play("movies/Logo.mpg");
+#endif
 					gGameState = GS_LOGO_MPEG;
 					TRACE("gGameState = GS_LOGO_MPEG;");
 					break;
@@ -2516,10 +2544,17 @@ main(int argc, char *argv[])
 				}
 
 				case GS_INIT_INTRO_MPEG: {
+#ifdef MODLOADER
+					if(FrontEndMenuManager.OS_Language == LANG_FRENCH || FrontEndMenuManager.OS_Language == LANG_GERMAN)
+						ModLoader_PlayMovieInWindow_GTAtitles(cmdShow, "movies/GTAtitlesGER.mpg");
+					else
+						ModLoader_PlayMovieInWindow_GTAtitles(cmdShow, "movies/GTAtitles.mpg");
+#else
 					if(FrontEndMenuManager.OS_Language == LANG_FRENCH || FrontEndMenuManager.OS_Language == LANG_GERMAN)
 						MoviePlayer::Play("movies/GTAtitlesGER.mpg");
 					else
 						MoviePlayer::Play("movies/GTAtitles.mpg");
+#endif
 
 					gGameState = GS_INTRO_MPEG;
 					TRACE("gGameState = GS_INTRO_MPEG;");
@@ -2610,7 +2645,11 @@ main(int argc, char *argv[])
 #endif
 					{
 						if(psRefreshAndGetWindowMinimizedPause()) break;
+#ifdef MODLOADER
+						ModLoader_InitialiseGame();
+#else
 						InitialiseGame();
+#endif
 						FrontEndMenuManager.m_bGameNotLoaded = false;
 						gGameState = GS_PLAYING_GAME;
 						TRACE("gGameState = GS_PLAYING_GAME;");
@@ -2642,7 +2681,11 @@ main(int argc, char *argv[])
 						CGame::currLevel = (eLevelName)TheMemoryCard.GetLevelToLoad();
 					}
 #else
+#ifdef MODLOADER
+					ModLoader_InitialiseGame();
+#else
 					InitialiseGame();
+#endif
 
 					FrontEndMenuManager.m_bGameNotLoaded = false;
 #endif

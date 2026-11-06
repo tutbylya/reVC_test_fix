@@ -51,6 +51,7 @@
 
 #include "crossplatform.h"
 #include "framepacing.h"
+#include "remastered_ui.h"
 
 #ifndef _WIN32
 #include "assert.h"
@@ -507,6 +508,9 @@ bool LoadINISettings()
 {
 	if (!ini.read(cfg))
 		return false;
+	ReadIniIfExists("Interface", "MoneyLeadingZeros", &RemasteredUI::MoneyLeadingZeros);
+	ReadIniIfExists("Loading", "ScreenCount", &RemasteredUI::ScreenCount);
+	RemasteredUI::ClampSettings();
 
 #ifdef IMPROVED_VIDEOMODE
 	ReadIniIfExists("VideoMode", "Width", &FrontEndMenuManager.m_nPrefsWidth);
@@ -657,6 +661,9 @@ bool LoadINISettings()
 
 void SaveINISettings()
 {
+	RemasteredUI::ClampSettings();
+	StoreIni("Interface", "MoneyLeadingZeros", RemasteredUI::MoneyLeadingZeros);
+	StoreIni("Loading", "ScreenCount", RemasteredUI::ScreenCount);
 #ifdef IMPROVED_VIDEOMODE
 	StoreIni("VideoMode", "Width", FrontEndMenuManager.m_nPrefsWidth);
 	StoreIni("VideoMode", "Height", FrontEndMenuManager.m_nPrefsHeight);

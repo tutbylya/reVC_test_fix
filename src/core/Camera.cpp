@@ -10,6 +10,9 @@
 #include "PlayerPed.h"
 #include "Wanted.h"
 #include "Pad.h"
+#ifdef REVC_LEGACY_ASI
+#include "legacy_asi_input.h"
+#endif
 #include "ControllerConfig.h"
 #include "General.h"
 #include "ZoneCull.h"
@@ -1163,7 +1166,13 @@ CCamera::CamControl(void)
 #endif
 			   ){
 				// See if we want to enter first person mode
+#ifdef REVC_LEGACY_ASI
+				// VC 1.0 CamControl's two original thiscall sites.
+				if(LegacyAsi::OriginalLookLeftRight(CPad::GetPad(0), 0x4711F2) ||
+				   LegacyAsi::OriginalLookUpDown(CPad::GetPad(0), 0x471206)){
+#else
 				if(CPad::GetPad(0)->LookAroundLeftRight() || CPad::GetPad(0)->LookAroundUpDown()){
+#endif
 					m_uiFirstPersonCamLastInputTime = CTimer::GetTimeInMilliseconds();
 					m_bFirstPersonBeingUsed = true;
 				}

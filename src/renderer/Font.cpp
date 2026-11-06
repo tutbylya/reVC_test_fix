@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 #include "Sprite2d.h"
 #include "TxdStore.h"
@@ -447,23 +450,47 @@ CFont::Initialise(void)
 	switch (LanguageSet) {
 	case FONT_LANGSET_EFIGS:
 	default:
+#ifdef MODLOADER
+		ModLoader_FontsTxd(slot, "MODELS/FONTS.TXD");
+#else
 		CTxdStore::LoadTxd(slot, "MODELS/FONTS.TXD");
+#endif
 		break;
 	case FONT_LANGSET_POLISH:
+#ifdef MODLOADER
+		ModLoader_FontsTxd(slot, "MODELS/FONTS_P.TXD");
+#else
 		CTxdStore::LoadTxd(slot, "MODELS/FONTS_P.TXD");
+#endif
 		break;
 	case FONT_LANGSET_RUSSIAN:
+#ifdef MODLOADER
+		ModLoader_FontsTxd(slot, "MODELS/FONTS_R.TXD");
+#else
 		CTxdStore::LoadTxd(slot, "MODELS/FONTS_R.TXD");
+#endif
 		break;
 	case FONT_LANGSET_JAPANESE:
+#ifdef MODLOADER
+		ModLoader_FontsTxd(slot, "MODELS/FONTS_J.TXD");
+#else
 		CTxdStore::LoadTxd(slot, "MODELS/FONTS_J.TXD");
+#endif
 		break;
 	case FONT_LANGSET_UKRAINIAN:
+#ifdef MODLOADER
+		CTxdStore::LoadTxd(slot, ModLoader_RegisterAndGetTexDiction_Unsafe("MODELS/FONTS_UKR.TXD"));
+#else
 		CTxdStore::LoadTxd(slot, "MODELS/FONTS_UKR.TXD");
+#endif
 		break;
 	}
 #else
+#ifdef MODLOADER
+	ModLoader_FontsTxd(slot, "MODELS/FONTS.TXD");
+#else
 	CTxdStore::LoadTxd(slot, "MODELS/FONTS.TXD");
+#endif
 #endif
 	CTxdStore::AddRef(slot);
 	CTxdStore::PushCurrentTxd();
@@ -507,6 +534,9 @@ CFont::Initialise(void)
 void
 CFont::LoadButtons(const char *txdPath)
 {
+#ifdef MODLOADER
+	txdPath = ModLoader_RegisterAndGetTexDiction_Unsafe(txdPath);
+#endif
 	if (int file = CFileMgr::OpenFile(txdPath)) {
 		CFileMgr::CloseFile(file);
 		if (ButtonsSlot == -1)
@@ -566,19 +596,39 @@ CFont::ReloadFonts(uint8 set)
 		{
 		case FONT_LANGSET_EFIGS:
 		default:
+#ifdef MODLOADER
+			ModLoader_FontsTxd(Slot, "MODELS/FONTS.TXD");
+#else
 			CTxdStore::LoadTxd(Slot, "MODELS/FONTS.TXD");
+#endif
 			break;
 		case FONT_LANGSET_POLISH:
+#ifdef MODLOADER
+			ModLoader_FontsTxd(Slot, "MODELS/FONTS_P.TXD");
+#else
 			CTxdStore::LoadTxd(Slot, "MODELS/FONTS_P.TXD");
+#endif
 			break;
 		case FONT_LANGSET_RUSSIAN:
+#ifdef MODLOADER
+			ModLoader_FontsTxd(Slot, "MODELS/FONTS_R.TXD");
+#else
 			CTxdStore::LoadTxd(Slot, "MODELS/FONTS_R.TXD");
+#endif
 			break;
 		case FONT_LANGSET_JAPANESE:
+#ifdef MODLOADER
+			ModLoader_FontsTxd(Slot, "MODELS/FONTS_J.TXD");
+#else
 			CTxdStore::LoadTxd(Slot, "MODELS/FONTS_J.TXD");
+#endif
 			break;
 		case FONT_LANGSET_UKRAINIAN:
+#ifdef MODLOADER
+			CTxdStore::LoadTxd(Slot, ModLoader_RegisterAndGetTexDiction_Unsafe("MODELS/FONTS_UKR.TXD"));
+#else
 			CTxdStore::LoadTxd(Slot, "MODELS/FONTS_UKR.TXD");
+#endif
 			break;
 		}
 		CTxdStore::SetCurrentTxd(Slot);

@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 #include "main.h"
 
 #include "General.h"
@@ -825,7 +828,11 @@ CPlane::LoadPath(char const *filename, int32 &numNodes, float &totalLength, bool
 	int bp, lp;
 	int i;
 
+#ifdef MODLOADER
+	ModLoader_FlightDat(filename, work_buff, sizeof(work_buff), "r");
+#else
 	CFileMgr::LoadFile(filename, work_buff, sizeof(work_buff), "r");
+#endif
 	*gString = '\0';
 	for(bp = 0, lp = 0; work_buff[bp] != '\n'; bp++, lp++)
 		gString[lp] = work_buff[bp];

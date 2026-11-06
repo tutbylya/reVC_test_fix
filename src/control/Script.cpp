@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 #include "Script.h"
 #include "ScriptCommands.h"
@@ -738,11 +741,19 @@ int CTheScripts::OpenScript()
 {
 	CFileMgr::ChangeDir("\\");
 	switch (ScriptToLoad) {
+#ifdef MODLOADER
+	case 0: return ModLoader_MainScm("data\\main.scm", "rb");
+#else
 	case 0: return CFileMgr::OpenFile("data\\main.scm", "rb");
+#endif
 	case 1: return CFileMgr::OpenFile("data\\freeroam_miami.scm", "rb");
 	case 2: return CFileMgr::OpenFile("data\\main_d.scm", "rb");
 	}
+#ifdef MODLOADER
+	return ModLoader_MainScm("data\\main.scm", "rb");
+#else
 	return CFileMgr::OpenFile("data\\main.scm", "rb");
+#endif
 }
 #endif
 
@@ -777,7 +788,11 @@ void CTheScripts::Init()
 	int mainf = OpenScript();
 #else
 	CFileMgr::SetDir("data");
+#ifdef MODLOADER
+	int mainf = ModLoader_MainScm("main.scm", "rb");
+#else
 	int mainf = CFileMgr::OpenFile("main.scm", "rb");
+#endif
 #endif
 	CFileMgr::Read(mainf, (char*)ScriptSpace, SIZE_MAIN_SCRIPT);
 	CFileMgr::CloseFile(mainf);

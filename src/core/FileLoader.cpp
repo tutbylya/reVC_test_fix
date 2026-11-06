@@ -29,6 +29,9 @@
 #include "Streaming.h"
 #include "ColStore.h"
 #include "Occlusion.h"
+#ifdef MODLOADER
+#include "modloader.h"
+#endif
 
 char CFileLoader::ms_line[256];
 
@@ -61,7 +64,19 @@ CFileLoader::LoadLevel(const char *filename)
 		savedTxd = RwTexDictionaryCreate();
 		RwTexDictionarySetCurrent(savedTxd);
 	}
+#ifdef MODLOADER
+	const char* datName = filename;
+	for(const char* p = filename; *p; ++p)
+		if(*p == '/' || *p == '\\') datName = p + 1;
+	if(strcasecmp(datName, "DEFAULT.DAT") == 0)
+		fd = ModLoader_DefaultDat(filename, "r");
+	else if(strcasecmp(datName, "GTA_VC.DAT") == 0 || strcasecmp(datName, "GTA3.DAT") == 0)
+		fd = ModLoader_GtaDat(filename, "r");
+	else
+		fd = CFileMgr::OpenFile(filename, "r");
+#else
 	fd = CFileMgr::OpenFile(filename, "r");
+#endif
 	assert(fd > 0);
 
 	for(line = LoadLine(fd); line; line = LoadLine(fd)){
@@ -77,22 +92,42 @@ CFileLoader::LoadLevel(const char *filename)
 			PUSH_MEMID(MEMID_TEXTURES);
 			strcpy(txdname, line+11);
 			LoadingScreenLoadingFile(txdname);
+#ifdef MODLOADER
+			RwTexDictionary *txd = LoadTexDictionary(ModLoader_RegisterAndGetTexDiction_Unsafe(txdname));
+#else
 			RwTexDictionary *txd = LoadTexDictionary(txdname);
+#endif
 			AddTexDictionaries(savedTxd, txd);
 			RwTexDictionaryDestroy(txd);
 			POP_MEMID();
 		}else if(strncmp(line, "COLFILE", 7) == 0){
 			LoadingScreenLoadingFile(line+10);
+#ifdef MODLOADER
+			LoadCollisionFile(ModLoader_RegisterAndGetColFile_Unsafe(line + 10), 0);
+#else
 			LoadCollisionFile(line+10, 0);
+#endif
 		}else if(strncmp(line, "MODELFILE", 9) == 0){
 			LoadingScreenLoadingFile(line + 10);
+#ifdef MODLOADER
+			LoadModelFile(ModLoader_RegisterAndGetAtomicFile_Unsafe(line + 10));
+#else
 			LoadModelFile(line + 10);
+#endif
 		}else if(strncmp(line, "HIERFILE", 8) == 0){
 			LoadingScreenLoadingFile(line + 9);
+#ifdef MODLOADER
+			LoadClumpFile(ModLoader_RegisterAndGetClumpFile_Unsafe(line + 9));
+#else
 			LoadClumpFile(line + 9);
+#endif
 		}else if(strncmp(line, "IDE", 3) == 0){
 			LoadingScreenLoadingFile(line + 4);
+#ifdef MODLOADER
+			LoadObjectTypes(ModLoader_RegisterAndGetIdeFile_Unsafe(line + 4));
+#else
 			LoadObjectTypes(line + 4);
+#endif
 		}else if(strncmp(line, "IPL", 3) == 0){
 			if(!objectsLoaded){
 				LoadingScreenLoadingFile("Collision");
@@ -110,7 +145,11 @@ CFileLoader::LoadLevel(const char *filename)
 			}
 			PUSH_MEMID(MEMID_WORLD);
 			LoadingScreenLoadingFile(line + 4);
+#ifdef MODLOADER
+			LoadScene(ModLoader_RegisterAndGetIplFile_Unsafe(line + 4));
+#else
 			LoadScene(line + 4);
+#endif
 			POP_MEMID();
 		}else if(strncmp(line, "SPLASH", 6) == 0){
 #ifndef DISABLE_LOADING_SCREEN

@@ -1,0 +1,21 @@
+; Optional native Linux settings. Copy to modloader/modloader.ini.
+; Without a config, all visible mod directories use priority 50.
+[Folder.Config]
+Profile = Default
+
+[Profiles.Default.Config]
+IgnoreAllMods = false
+ExcludeAllMods = false
+
+[Profiles.Default.Priority]
+; MyMod = 70
+; DisabledMod = 0
+
+[Profiles.Default.IgnoreMods]
+_ignore
+
+[Profiles.Default.IgnoreFiles]
+; *.bak
+
+[Profiles.Default.IncludeMods]
+; Used when ExcludeAllMods = true
