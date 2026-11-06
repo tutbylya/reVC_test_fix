@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+"""Launch the separate Windows x86 legacy-ASI runtime under Wine on Linux.
+
+This does not load PE modules into the native ELF game, extend the original
+game ABI, or certify third-party code. The Windows launcher/core still perform
+their own handoff, complete manifest/hash checks and normal DLL loading.
+"""
+
+import argparse
+import os
+from pathlib import Path
+import platform
+import shutil
+import stat
+import struct
+import subprocess
+import sys
+
+
+ARENA_BEGIN = 0x00400000
+ARENA_END = 0x00A20000
+PROTOCOL_MARKER = (0x53415652, 3, ARENA_BEGIN, ARENA_END, 52)
+MAX_IMAGE_BYTES = 512 * 1024 * 1024
+
+
+class LaunchError(Exception):
+    def __init__(self, message, exit_code=2):
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
+class PeImage:
+    """Bounded, read-only PE inspection; never maps or executes image code."""
+
+    def __init__(self, stream, name, dll):
+        self.stream = stream
+        self.name = name
+        self.length = os.fstat(stream.fileno()).st_size
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            self.fail("is not a regular file")
+        if not 64 <= self.length <= MAX_IMAGE_BYTES:
+            self.fail("has an invalid or oversized PE image")
+        if self.read(0, 2) != b"MZ":
+            self.fail("is not a Windows PE image (the native Linux ELF game cannot host Windows ASIs)")
+        nt = self.u32(60)
+        if nt < 64 or self.read(nt, 4) != b"PE\0\0":
+            self.fail("has an invalid PE header")
+        machine, count, _, _, _, optional_size, self.flags = self.unpack("<HHIIIHH", nt + 4)
+        if machine != 0x014C:
+            self.fail("must be the x86/32-bit legacy build, not an x64 game")
+        if not (self.flags & 2) or bool(self.flags & 0x2000) != dll:
+            self.fail("has the wrong EXE/DLL image type")
+        if not 1 <= count <= 96 or optional_size < 224:
+            self.fail("has invalid PE sections or optional header")
+        optional = nt + 24
+        self.read(optional, optional_size)
+        if self.u16(optional) != 0x010B:
+            self.fail("must be a PE32 image")
+        self.base = self.u32(optional + 28)
+        self.image_size = self.u32(optional + 56)
+        self.headers_size = self.u32(optional + 60)
+        self.dll_flags = self.u16(optional + 70)
+        self.directory_count = self.u32(optional + 92)
+        self.export_rva, self.export_size = self.unpack("<II", optional + 96)
+        table = optional + optional_size
+        if not self.headers_size or self.headers_size > self.length or table + count * 40 > self.headers_size:
+            self.fail("has invalid PE header bounds")
+        self.sections = []
+        for index in range(count):
+            data = self.read(table + index * 40, 40)
+            name = data[:8].rstrip(b"\0")
+            virtual_size, rva, raw_size, raw_offset = struct.unpack_from("<IIII", data, 8)
+            flags = struct.unpack_from("<I", data, 36)[0]
+            if rva > self.image_size or virtual_size > self.image_size - rva:
+                self.fail("has a section outside SizeOfImage")
+            if raw_size and (raw_offset < self.headers_size or raw_offset > self.length or raw_size > self.length - raw_offset):
+                self.fail("has a section outside the file")
+            self.sections.append((name, virtual_size, rva, raw_size, raw_offset, flags))
+
+    def fail(self, message):
+        raise LaunchError("{} {}.".format(self.name, message))
+
+    def read(self, offset, count):
+        if offset < 0 or count < 0 or offset > self.length or count > self.length - offset:
+            self.fail("contains truncated or out-of-bounds PE data")
+        self.stream.seek(offset)
+        data = self.stream.read(count)
+        if len(data) != count:
+            self.fail("changed or was truncated during inspection")
+        return data
+
+    def unpack(self, format_string, offset):
+        return struct.unpack(format_string, self.read(offset, struct.calcsize(format_string)))
+
+    def u16(self, offset):
+        return self.unpack("<H", offset)[0]
+
+    def u32(self, offset):
+        return self.unpack("<I", offset)[0]
+
+    def offset(self, rva, count):
+        if rva < self.headers_size and count <= self.headers_size - rva:
+            self.read(rva, count)
+            return rva
+        for _, _, section_rva, raw_size, raw_offset, _ in self.sections:
+            within = rva - section_rva
+            if 0 <= within < raw_size and count <= raw_size - within:
+                self.read(raw_offset + within, count)
+                return raw_offset + within
+        self.fail("contains an RVA without file-backed data")
+
+    def check_bootstrap(self):
+        if self.base != ARENA_BEGIN or self.dll_flags & 0x40 or not (self.flags & 1):
+            self.fail("is not the fixed-base canonical legacy bootstrap")
+        compat = [section for section in self.sections if section[0] == b".compat"]
+        if len(compat) != 1:
+            self.fail("must contain exactly one dedicated .compat section")
+        _, size, rva, _, _, flags = compat[0]
+        if rva > 0x6A000 or size < ARENA_END - ARENA_BEGIN - rva or flags & 0x20000000 or flags & 0xC0000000 != 0xC0000000:
+            self.fail("has incompatible .compat bounds/protection flags")
+        if self.image_size < ARENA_END - ARENA_BEGIN:
+            self.fail("does not cover the canonical ABI arena")
+        if not self.directory_count or not self.export_rva:
+            self.fail("is missing the legacy handoff exports")
+        exports = self.offset(self.export_rva, 40)
+        functions, names, functions_rva, names_rva, ordinals_rva = self.unpack("<IIIII", exports + 20)
+        if not 1 <= functions <= 4096 or not 1 <= names <= 4096:
+            self.fail("has invalid legacy export counts")
+        function_offset = self.offset(functions_rva, functions * 4)
+        name_offset = self.offset(names_rva, names * 4)
+        ordinal_offset = self.offset(ordinals_rva, names * 2)
+        marker_found = callback_found = False
+        for index in range(names):
+            address = self.u32(name_offset + index * 4)
+            # Read only contiguous, file-backed bytes of the bounded export name.
+            text = bytearray()
+            for step in range(64):
+                value = self.read(self.offset(address + step, 1), 1)[0]
+                if value == 0:
+                    break
+                text.append(value)
+            else:
+                self.fail("has an unterminated export name")
+            marker_name = bytes(text) in (b"reVC_LegacyArenaProtocol", b"_reVC_LegacyArenaProtocol")
+            callback_name = bytes(text) in (b"reVC_LegacyAsiPreInit", b"_reVC_LegacyAsiPreInit@12", b"reVC_LegacyAsiPreInit@12")
+            if not marker_name and not callback_name:
+                continue
+            ordinal = self.u16(ordinal_offset + index * 2)
+            if ordinal >= functions:
+                self.fail("has an invalid legacy export ordinal")
+            target = self.u32(function_offset + ordinal * 4)
+            if marker_name:
+                if self.unpack("<IIIII", self.offset(target, 20)) != PROTOCOL_MARKER:
+                    self.fail("has an incompatible legacy protocol marker")
+                marker_found = True
+            if callback_name:
+                forwarded = self.export_rva <= target < self.export_rva + self.export_size
+                executable = any(section[5] & 0x20000000 and section[2] <= target < section[2] + section[1] for section in self.sections)
+                if not target or forwarded or not executable:
+                    self.fail("has an invalid legacy pre-init callback")
+                callback_found = True
+        if not marker_found or not callback_found:
+            self.fail("is missing the matching legacy protocol marker or pre-init callback")
+
+
+def validate_runtime(directory):
+    directory = Path(directory).resolve(strict=True)
+    for name, dll in (("reVC.exe", False), ("reVC-game.exe", False), ("reVC-core.dll", True)):
+        path = directory / name
+        if not path.is_file() or path.resolve().parent != directory:
+            raise LaunchError("Missing colocated {}. Extract the complete experimental x86 legacy/Wine package, not a native Linux or x64 build.".format(name))
+        with path.open("rb") as stream:
+            image = PeImage(stream, name, dll)
+            if name == "reVC-game.exe":
+                image.check_bootstrap()
+    manifest = directory / "legacy-asi" / "enabled.ini"
+    if not manifest.is_file():
+        raise LaunchError("Missing legacy-asi/enabled.ini. Restore the empty template from the matching package; no mods are enabled automatically.")
+    return directory
+
+
+def select_prefix(environment):
+    explicit = "WINEPREFIX" in environment
+    if explicit:
+        raw = environment["WINEPREFIX"]
+        if not raw or not Path(raw).is_absolute():
+            raise LaunchError("WINEPREFIX must be an absolute directory path.")
+        prefix = Path(raw)
+    else:
+        raw = environment.get("XDG_DATA_HOME")
+        if raw:
+            data = Path(raw)
+            if not data.is_absolute():
+                raise LaunchError("XDG_DATA_HOME must be absolute, or unset it to use ~/.local/share.")
+        else:
+            home = Path(environment.get("HOME") or str(Path.home()))
+            if not home.is_absolute():
+                raise LaunchError("Cannot determine an absolute user home for the isolated Wine prefix.")
+            data = home / ".local" / "share"
+        prefix = data / "reVC" / "legacy-asi-wine"
+    if prefix.exists() and not prefix.is_dir():
+        raise LaunchError("WINEPREFIX is not a directory: {}".format(prefix))
+    if explicit and not prefix.parent.is_dir():
+        raise LaunchError("The parent of the explicit WINEPREFIX does not exist: {}".format(prefix.parent))
+    return prefix, explicit
+
+
+def find_wine(environment):
+    candidate = environment.get("REVC_WINE", "wine")
+    if not candidate:
+        raise LaunchError("REVC_WINE must name one Wine executable, without shell arguments.")
+    executable = shutil.which(os.path.expanduser(candidate), path=environment.get("PATH", os.defpath))
+    if not executable:
+        raise LaunchError("Wine executable not found: {!r}. Install Wine with 32-bit Windows application support, or set REVC_WINE to one executable path (not a shell command).".format(candidate), 127)
+    return str(Path(executable).resolve())
+
+
+def main(argv=None, runtime_directory=None):
+    parser = argparse.ArgumentParser(description="Experimental original-ASI runtime on Linux through Wine. This is not native ELF ASI loading or universal mod compatibility.")
+    parser.add_argument("--check", action="store_true", help="inspect the sibling runtime and configuration only; execute nothing and create no files")
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    separator = arguments.index("--") if "--" in arguments else len(arguments)
+    options = parser.parse_args(arguments[:separator])
+    game_arguments = arguments[separator + 1:] if separator < len(arguments) else []
+    if options.check and game_arguments:
+        parser.error("--check does not accept game arguments")
+    try:
+        if not sys.platform.startswith("linux"):
+            raise LaunchError("This launcher is for Linux; on Windows run the matching reVC.exe directly.")
+        if platform.machine().lower() not in ("x86_64", "amd64", "i386", "i486", "i586", "i686", "x86"):
+            raise LaunchError("This package currently requires an x86/x86_64 Linux host and Wine capable of running Windows x86 programs.")
+        directory = validate_runtime(runtime_directory or Path(__file__).resolve().parent)
+        environment = dict(os.environ)
+        prefix, explicit = select_prefix(environment)
+        wine = find_wine(environment)
+        if options.check:
+            print("Runtime PE32/canonical bootstrap check passed: {}".format(directory))
+            print("Wine: {}\nPrefix: {}".format(wine, prefix))
+            print("No code executed. This does not certify Wine runtime behavior, ASI compatibility or safety.")
+            return 0
+        if not explicit:
+            # Create only the default prefix's parent. Wine owns initializing
+            # its prefix; never reset, migrate or reconfigure an existing one.
+            prefix.parent.mkdir(parents=True, exist_ok=True)
+        environment["WINEPREFIX"] = str(prefix)
+        # Preserve a user-selected WINEARCH; do not force win32, which is not
+        # supported by new WoW64-only Wine builds. Wine validates its own prefix.
+        print("Starting experimental x86 legacy runtime through Wine. Enabled ASIs execute with your user permissions; this is not a sandbox.", file=sys.stderr)
+        result = subprocess.run([wine, str(directory / "reVC.exe")] + game_arguments, cwd=str(directory), env=environment, check=False)
+        return result.returncode if result.returncode >= 0 else 128 - result.returncode
+    except LaunchError as error:
+        print("reVC legacy ASI: {}".format(error), file=sys.stderr)
+        return error.exit_code
+    except OSError as error:
+        print("reVC legacy ASI: {}".format(error), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

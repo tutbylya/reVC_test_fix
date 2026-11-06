@@ -80,6 +80,9 @@ jobs:
           cp docs/ModLoader.md gamefiles/modloader/.data/reVC-ModLoader.md
           cp utils/modloader/linux-modloader.ini.example gamefiles/modloader/.data/modloader.ini.example
 
+      - name: Include documented legacy-ASI directory
+        run: cmake -DREVC_PACKAGE_DIRECTORY=gamefiles -P utils/legacy-asi/stage-package.cmake
+
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:

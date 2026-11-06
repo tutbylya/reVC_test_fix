@@ -87,6 +87,9 @@ jobs:
           mv ./vendor/mpg123/dist/Win64/libmpg123-0.dll ./gamefiles/
           mv ./vendor/openal-soft/dist/Win64/OpenAL32.dll ./gamefiles/
 
+      - name: Include documented legacy-ASI directory
+        run: cmake -DREVC_PACKAGE_DIRECTORY=gamefiles -P utils/legacy-asi/stage-package.cmake
+
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:

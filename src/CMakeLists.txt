@@ -27,10 +27,23 @@ else()
     add_executable(${EXECUTABLE} WIN32 ${${PROJECT}_SOURCES})
 endif()
 
+# Ship an empty, documented mod location even in native/x64 builds. The
+# directory is discoverability, not a claim that those builds can execute ASIs.
+add_custom_command(TARGET ${EXECUTABLE} POST_BUILD
+    COMMAND "${CMAKE_COMMAND}"
+        "-DREVC_PACKAGE_DIRECTORY=$<TARGET_FILE_DIR:${EXECUTABLE}>"
+        -P "${PROJECT_SOURCE_DIR}/utils/legacy-asi/stage-package.cmake"
+    VERBATIM)
+
 if(${PROJECT}_WITH_LEGACY_ASI)
     # The source glob includes extras/legacy_asi*.cpp; the opt-in macro is
     # private to the game core and must not change the renderer's ABI.
     target_compile_definitions(${EXECUTABLE} PRIVATE REVC_LEGACY_ASI REVC_LEGACY_ASI_CORE_DLL)
+    add_custom_command(TARGET ${EXECUTABLE} POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${PROJECT_SOURCE_DIR}/utils/legacy-asi/linux/reVC-legacy-asi"
+            "$<TARGET_FILE_DIR:${EXECUTABLE}>/reVC-legacy-asi"
+        VERBATIM)
     target_link_options(${EXECUTABLE} PRIVATE /BASE:0x20000000)
     set_target_properties(${EXECUTABLE} PROPERTIES
         OUTPUT_NAME "reVC-core"
@@ -207,6 +220,7 @@ target_compile_features(${EXECUTABLE} PRIVATE cxx_std_23)
 if(${PROJECT}_INSTALL)
     if(${PROJECT}_WITH_LEGACY_ASI)
         install(TARGETS reVC-legacy-launcher reVC-legacy-bootstrap RUNTIME DESTINATION ".")
+        install(PROGRAMS "${PROJECT_SOURCE_DIR}/utils/legacy-asi/linux/reVC-legacy-asi" DESTINATION ".")
     endif()
     install(
         TARGETS ${EXECUTABLE}
@@ -216,6 +230,12 @@ if(${PROJECT}_INSTALL)
     if(MSVC)
         install(FILES $<TARGET_PDB_FILE:${EXECUTABLE}> DESTINATION "." OPTIONAL)
     endif()
+    # Do not use install(FILES) for enabled.ini: a repeated installation must
+    # never replace a user's explicit allowlist with the empty default.
+    install(CODE "
+        set(REVC_PACKAGE_DIRECTORY \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}\")
+        include(\"${PROJECT_SOURCE_DIR}/utils/legacy-asi/stage-package.cmake\")
+    ")
 endif()
 
 reVC_platform_target(${EXECUTABLE} INSTALL)

@@ -49,7 +49,7 @@ if(${PROJECT}_WITH_LEGACY_ASI)
     if(NOT WIN32 OR NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" OR
        NOT CMAKE_SIZEOF_VOID_P EQUAL 4 OR
        NOT CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "X86")
-        message(FATAL_ERROR "REVC_WITH_LEGACY_ASI requires MSVC targeting Windows x86 (Visual Studio -A Win32). Native x64/Linux are not supported.")
+        message(FATAL_ERROR "REVC_WITH_LEGACY_ASI requires MSVC targeting Windows x86 (Visual Studio -A Win32). Native ELF/x64 cannot host PE32 ASIs; on Linux use the separate x86 package via reVC-legacy-asi and Wine (docs/LegacyASI.md).")
     endif()
     if(NOT LIBRW_PLATFORM STREQUAL "D3D9" AND NOT LIBRW_PLATFORM STREQUAL "GL3")
         message(FATAL_ERROR "REVC_WITH_LEGACY_ASI requires -DLIBRW_PLATFORM=D3D9 or GL3. WGPU and other backends are not supported.")

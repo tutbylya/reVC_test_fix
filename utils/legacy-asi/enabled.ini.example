@@ -1,6 +1,6 @@
-; Experimental vc10-scalars-v1 only. No third-party ASI is certified yet.
+; Experimental, limited Vice City 1.0 EN ABI; no module is enabled by default.
 ; UTF-8. Flat filenames only, at most 32 modules.
 ; A SHA-256 pins identity, not ABI compatibility or safety.
-; Do not enable Amazing Snapshot: camera/RenderWare ABI is not implemented.
+; Enable only an ABI-reviewed binary documented for this version of reVC.
 [Modules]
 ; ReviewedMod.asi=REPLACE_WITH_64_HEXADECIMAL_SHA256_DIGITS

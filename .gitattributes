@@ -4,3 +4,6 @@ vendor/* linguist-vendored
 # Patches contain explicit "No newline at end of file" markers. CRLF
 # conversion changes the bytes described by those terminal hunks.
 *.patch text eol=lf
+
+# Executable Linux launcher: keep its shebang readable after Windows checkouts.
+utils/legacy-asi/linux/reVC-legacy-asi text eol=lf

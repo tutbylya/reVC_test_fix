@@ -60,7 +60,7 @@ newoption {
 local legacyAsi = _OPTIONS["with-legacy-asi"] ~= nil
 local legacySuffix = legacyAsi and "-legacy" or ""
 if legacyAsi and os.target() ~= "windows" then
-	error("--with-legacy-asi requires Windows x86; native x64/Linux and WGPU are not supported")
+	error("--with-legacy-asi requires Windows x86; for Linux use the separate x86 package via reVC-legacy-asi and Wine (docs/LegacyASI.md), not the native ELF/WGPU build")
 end
 
 require("autoconf")
@@ -341,8 +341,27 @@ project "reVC"
 	kind (legacyAsi and "SharedLib" or "WindowedApp")
 	targetname (legacyAsi and "reVC-core" or "reVC")
 	targetdir ("bin/%{cfg.platform}" .. legacySuffix .. "/%{cfg.buildcfg}")
+	-- Stage documented, empty defaults without adding a CMake/Python dependency
+	-- to Premake builds. Never overwrite an existing opt-in manifest on rebuild.
+	local legacyPackage = path.getabsolute("utils/legacy-asi/package/legacy-asi")
+	filter "platforms:win*"
+		postbuildcommands {
+			'{MKDIR} "%{cfg.buildtarget.directory}/legacy-asi"',
+			'if not exist "%{cfg.buildtarget.directory}/legacy-asi/enabled.ini" {COPYFILE} "' .. legacyPackage .. '/enabled.ini" "%{cfg.buildtarget.directory}/legacy-asi/enabled.ini"',
+			'if not exist "%{cfg.buildtarget.directory}/legacy-asi/README.txt" {COPYFILE} "' .. legacyPackage .. '/README.txt" "%{cfg.buildtarget.directory}/legacy-asi/README.txt"',
+		}
+	filter "platforms:not win*"
+		postbuildcommands {
+			'{MKDIR} "%{cfg.buildtarget.directory}/legacy-asi"',
+			'if [ ! -e "%{cfg.buildtarget.directory}/legacy-asi/enabled.ini" ] && [ ! -L "%{cfg.buildtarget.directory}/legacy-asi/enabled.ini" ]; then {COPYFILE} "' .. legacyPackage .. '/enabled.ini" "%{cfg.buildtarget.directory}/legacy-asi/enabled.ini"; fi',
+			'if [ ! -e "%{cfg.buildtarget.directory}/legacy-asi/README.txt" ] && [ ! -L "%{cfg.buildtarget.directory}/legacy-asi/README.txt" ]; then {COPYFILE} "' .. legacyPackage .. '/README.txt" "%{cfg.buildtarget.directory}/legacy-asi/README.txt"; fi',
+		}
+	filter {}
 	if legacyAsi then
 		defines { "REVC_LEGACY_ASI", "REVC_LEGACY_ASI_CORE_DLL" }
+		postbuildcommands {
+			'{COPYFILE} "' .. path.getabsolute("utils/legacy-asi/linux/reVC-legacy-asi") .. '" "%{cfg.buildtarget.directory}/reVC-legacy-asi"'
+		}
 		dependson { "legacy-launcher", "legacy-bootstrap" }
 		-- Leave the original VC address region free for the checked ABI arena.
 		-- ASLR remains enabled; the runtime still validates the reservation.

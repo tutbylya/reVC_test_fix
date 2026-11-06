@@ -1,7 +1,20 @@
-name: reVC legacy ASI prototype
+name: reVC legacy ASI (Windows and Linux-Wine)
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'src/extras/legacy_asi*'
+      - 'src/core/Game.cpp'
+      - 'src/core/main.cpp'
+      - 'src/skel/glfw/glfw.cpp'
+      - 'src/skel/win/win.cpp'
+      - 'utils/legacy-asi/**'
+      - 'CMakeLists.txt'
+      - 'src/CMakeLists.txt'
+      - 'premake5.lua'
+      - '.gitattributes'
+      - '.github/workflows/reVC_legacy_asi.yml'
   pull_request:
     paths:
       - 'src/extras/legacy_asi*'
@@ -10,15 +23,31 @@ on:
       - 'src/skel/glfw/glfw.cpp'
       - 'src/skel/win/win.cpp'
       - 'utils/legacy-asi/**'
+      - 'CMakeLists.txt'
+      - 'src/CMakeLists.txt'
       - 'premake5.lua'
+      - '.gitattributes'
       - '.github/workflows/reVC_legacy_asi.yml'
 
 permissions:
   contents: read
 
 jobs:
+  source-tests:
+    name: Linux launcher and package defaults
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Test launcher without Wine or executable mods
+        run: python3 utils/legacy-asi/linux/test_launcher.py
+      - name: Test empty defaults and preservation of user manifests
+        run: cmake -P utils/legacy-asi/tests/package_defaults_tests.cmake
+
   experimental:
     name: Experimental x86 | ${{ matrix.renderer }}
+    needs: source-tests
     runs-on: windows-2022
     timeout-minutes: 45
     strategy:
@@ -42,6 +71,22 @@ jobs:
       - name: Test owned-child launcher and normal-loader TLS identity
         shell: cmd
         run: utils\legacy-asi\launcher\build-and-probe.cmd --run
+      - name: Compile canonical-image Wine probe (own source only)
+        if: matrix.renderer == 'd3d9'
+        shell: cmd
+        run: utils\legacy-asi\linux\build-probe.cmd
+      - name: Upload source-only Wine probe
+        if: matrix.renderer == 'd3d9'
+        uses: actions/upload-artifact@v6
+        with:
+          name: INTERNAL_legacy_asi_canonical_wine_probe
+          path: |
+            build/legacy-asi-wine-probe/reVC.exe
+            build/legacy-asi-wine-probe/reVC-game.exe
+            build/legacy-asi-wine-probe/reVC-core.dll
+            build/legacy-asi-wine-probe/legacy-asi/
+          if-no-files-found: error
+          retention-days: 3
       - name: Generate isolated experimental build
         shell: pwsh
         run: |
@@ -52,8 +97,75 @@ jobs:
         run: |
           msbuild build/legacy-asi/reVC-legacy-asi.sln /m:1 /nr:false /p:Configuration=Release /p:Platform=win-x86-librw_${{ matrix.renderer }}-oal
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Include legacy-ASI defaults and x86 runtime dependencies
+        shell: pwsh
+        run: |
+          $package = Join-Path $PWD 'bin/win-x86-librw_${{ matrix.renderer }}-oal-legacy/Release'
+          cmake "-DREVC_PACKAGE_DIRECTORY=$package" -P utils/legacy-asi/stage-package.cmake
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($dependency in @('vendor/mpg123/dist/Win32/libmpg123-0.dll', 'vendor/openal-soft/dist/Win32/OpenAL32.dll', 'vendor/libsndfile/dist/Win32/libsndfile-1.dll')) {
+            Copy-Item -LiteralPath $dependency -Destination $package
+          }
+          if ('${{ matrix.renderer }}' -eq 'gl3_glfw') {
+            Copy-Item -LiteralPath vendor/glfw-3.4.bin.WIN32/lib-vc2022/glfw3.dll -Destination $package
+          }
+          Copy-Item -LiteralPath docs/LegacyASI.md -Destination (Join-Path $package 'LegacyASI.md')
+          Copy-Item -LiteralPath docs/ModCompatibility.md -Destination (Join-Path $package 'ModCompatibility.md')
+          foreach ($required in @('reVC.exe', 'reVC-game.exe', 'reVC-core.dll', 'legacy-asi/enabled.ini', 'legacy-asi/README.txt')) {
+            if (!(Test-Path -LiteralPath (Join-Path $package $required) -PathType Leaf)) { throw "Missing package file: $required" }
+          }
       - uses: actions/upload-artifact@v6
         with:
           name: EXPERIMENTAL_partial_ABI_x86_${{ matrix.renderer }}
           path: bin/win-x86-librw_${{ matrix.renderer }}-oal-legacy/Release/
+          if-no-files-found: error
+
+  linux-wine:
+    name: Experimental Linux | Wine x86 D3D9
+    needs: experimental
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: INTERNAL_legacy_asi_canonical_wine_probe
+          path: build/wine-probe
+      - uses: actions/download-artifact@v8
+        with:
+          name: EXPERIMENTAL_partial_ABI_x86_d3d9
+          path: build/linux-wine-package
+      - name: Install Wine with 32-bit PE support and isolated display
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends wine wine64 wine32:i386 xvfb xauth
+      - name: Test real canonical launcher and source-owned ASIs under Wine
+        env:
+          WINEPREFIX: ${{ runner.temp }}/revc-legacy-canonical-probe
+        run: |
+          cp utils/legacy-asi/linux/reVC-legacy-asi build/wine-probe/
+          python3 build/wine-probe/reVC-legacy-asi --check
+          timeout --kill-after=10s 180s xvfb-run -a python3 build/wine-probe/reVC-legacy-asi
+          python3 - <<'PY'
+          from pathlib import Path
+          values = dict(line.split('=', 1) for line in Path('build/wine-probe/canonical-probe-result.txt').read_text().splitlines() if '=' in line)
+          expected = {'status': 'PASS', 'stage': 'complete', 'canonical_image': '1', 'modules': '3', 'native_events': '2', 'time_scale': '1.750'}
+          if any(values.get(key) != value for key, value in expected.items()):
+              raise SystemExit(f'Canonical Wine probe failed: {values}')
+          print('Canonical Wine probe passed; third-party mods and the game were not run.')
+          PY
+      - name: Package the Linux-Wine launcher (not the native ELF build)
+        run: |
+          cp utils/legacy-asi/linux/reVC-legacy-asi build/linux-wine-package/
+          chmod +x build/linux-wine-package/reVC-legacy-asi
+          python3 build/linux-wine-package/reVC-legacy-asi --check
+          # Preserve the executable mode inside upload-artifact's ZIP container.
+          tar -C build/linux-wine-package -czf build/reVC-legacy-asi-linux-wine-x86.tar.gz .
+      - uses: actions/upload-artifact@v6
+        with:
+          name: EXPERIMENTAL_partial_ABI_linux-wine-x86_d3d9
+          path: build/reVC-legacy-asi-linux-wine-x86.tar.gz
           if-no-files-found: error

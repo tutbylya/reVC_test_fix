@@ -63,6 +63,8 @@ jobs:
         }
 
         echo "name=reVC_${{ matrix.buildtype }}_${{ matrix.platform }}$suffix" >> $env:GITHUB_OUTPUT
+    - name: Include documented legacy-ASI directory
+      run: cmake -DREVC_PACKAGE_DIRECTORY=gamefiles -P utils/legacy-asi/stage-package.cmake
     - name: Upload artifact to actions
       uses: actions/upload-artifact@v6
       with:
