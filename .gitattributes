@@ -1,2 +1,6 @@
 sdk/* linguist-vendored
 vendor/* linguist-vendored
+
+# Patches contain explicit "No newline at end of file" markers. CRLF
+# conversion changes the bytes described by those terminal hunks.
+*.patch text eol=lf

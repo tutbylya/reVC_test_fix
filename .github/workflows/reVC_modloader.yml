@@ -32,6 +32,14 @@ jobs:
         with:
           vs-version: '[17.0,18.0)'
 
+      - name: Prepare and verify pinned Mod Loader source
+        shell: pwsh
+        run: ./utils/modloader/build.ps1 -Architecture '${{ matrix.architecture }}' -PrepareOnly
+
+      - name: Test LF and CRLF compatibility patch handling
+        shell: pwsh
+        run: ./utils/modloader/test-source-patch.ps1 -SourceRepository build/modloader-upstream
+
       - name: Build and package native reVC Mod Loader
         shell: pwsh
         run: ./utils/modloader/build.ps1 -Architecture '${{ matrix.architecture }}' -Jobs 2

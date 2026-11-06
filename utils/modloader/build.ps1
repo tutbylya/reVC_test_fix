@@ -3,6 +3,7 @@
 param(
     [ValidateSet('x64', 'x86', 'All')][string]$Architecture = 'x64',
     [switch]$PackageOnly,
+    [switch]$PrepareOnly,
     [string]$SourceDirectory,
     [string]$OutputDirectory,
     [string]$InstallDirectory,
@@ -12,6 +13,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'This helper builds Windows Mod Loader binaries only.' }
+if ($PrepareOnly -and ($PackageOnly -or $InstallDirectory)) {
+    throw 'PrepareOnly cannot be combined with PackageOnly or InstallDirectory.'
+}
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $sourceUrl = 'https://github.com/Cowboy-69/modloader.git'
 $sourceCommit = '76c127e983069bcb1308b198c11ce8b81147b0bc'
@@ -38,7 +42,7 @@ function Get-GitText {
     param([string[]]$GitArguments)
     $result = & git @GitArguments
     if ($LASTEXITCODE -ne 0) { throw 'Git inspection failed.' }
-    return (($result -join "`n").Replace("`r`n", "`n").TrimEnd())
+    return (($result -join "`n").Replace("`r`n", "`n").TrimEnd([char[]]"`r`n"))
 }
 
 function Get-PeMachine {
@@ -98,15 +102,30 @@ foreach ($line in ($untracked -split "`n")) {
         throw "Unexpected untracked source file: $line. Preserve/move your changes before building."
     }
 }
-$expectedDiff = (Get-Content -LiteralPath $compatPatch -Raw).Replace("`r`n", "`n").TrimEnd()
+$normalizedPatch = [IO.File]::ReadAllText($compatPatch).Replace("`r`n", "`n")
+$expectedDiff = $normalizedPatch.TrimEnd([char[]]"`r`n")
 $actualDiff = Get-GitText @('-C', $SourceDirectory, 'diff', '--binary', 'HEAD', '--')
 if (!$actualDiff -and !$PackageOnly) {
-    Invoke-Checked git @('-C', $SourceDirectory, 'apply', '--check', $compatPatch)
-    Invoke-Checked git @('-C', $SourceDirectory, 'apply', $compatPatch)
+    # Windows checkout/manual copies can turn the patch itself into CRLF.
+    # For an unterminated source line, Git's "No newline" marker removes only
+    # the patch LF: a converted patch leaves a spurious CR in the match.
+    # Normalize a private copy, not source files or the user's checkout/config.
+    $temporaryPatch = [IO.Path]::GetTempFileName()
+    try {
+        [IO.File]::WriteAllText($temporaryPatch, $normalizedPatch, [Text.UTF8Encoding]::new($false))
+        Invoke-Checked git @('-C', $SourceDirectory, 'apply', '--check', $temporaryPatch)
+        Invoke-Checked git @('-C', $SourceDirectory, 'apply', $temporaryPatch)
+    } finally {
+        Remove-Item -LiteralPath $temporaryPatch -ErrorAction Stop
+    }
     $actualDiff = Get-GitText @('-C', $SourceDirectory, 'diff', '--binary', 'HEAD', '--')
 }
 if ($actualDiff -cne $expectedDiff) {
     throw 'Source changes do not exactly match revc-compat.patch. No reset/cleanup was performed.'
+}
+if ($PrepareOnly) {
+    Write-Output "Pinned Mod Loader sources and compatibility patch verified: $SourceDirectory"
+    return
 }
 
 $mappedDrive = $null
