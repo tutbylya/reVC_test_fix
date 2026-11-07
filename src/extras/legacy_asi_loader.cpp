@@ -12,7 +12,10 @@
 #include <bcrypt.h>
 #include "legacy_asi_arena_protocol.h"
 #include "legacy_asi_identity.h"
+#include "mod_menu.h"
+#include "mod_menu_storage.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdarg>
 #include <cstdint>
@@ -40,6 +43,8 @@ volatile LONG executionAttempted;
 HANDLE retainedFiles[MaxModules];
 HMODULE retainedModules[MaxModules];
 char errorText[1024];
+std::filesystem::path menuStatePath;
+std::vector<ModMenu::Entry> menuEntries;
 
 bool Fail(const char* format, ...)
 {
@@ -442,6 +447,21 @@ bool Load(const wchar_t* absoluteGameDirectory)
         return Fail("enabled.ini could not be read completely (Windows error %lu)", GetLastError());
     std::vector<Module> modules;
     if (!ParseManifest(contents, modules)) return false;
+    // The menu can only suppress entries in the existing, explicit hash-pinned
+    // allowlist. It never discovers, authorizes or rewrites third-party ASIs.
+    menuStatePath = std::filesystem::path(directory) / L"legacy-asi" / L".revc-disabled";
+    ModMenu::DisabledSet disabled;
+    if (!ModMenu::ReadDisabled(menuStatePath, disabled))
+        return Fail("Cannot read legacy-asi/.revc-disabled; no ASI has executed");
+    for (const auto& module : modules) {
+        const auto id = ModMenu::NormalizeId(module.nameUtf8);
+        const bool manageable = ModMenu::IsValidId(id);
+        menuEntries.push_back({ModMenu::Kind::Legacy, id, module.nameUtf8, false,
+                               !manageable || disabled.count(id) == 0, manageable, false});
+    }
+    modules.erase(std::remove_if(modules.begin(), modules.end(), [&](const Module& module) {
+        return disabled.count(ModMenu::NormalizeId(module.nameUtf8)) != 0;
+    }), modules.end());
     for (Module& module : modules)
         if (!Preflight(module, directory)) return false;
     for (const Module& module : modules) {
@@ -476,6 +496,9 @@ bool Load(const wchar_t* absoluteGameDirectory)
         std::fprintf(stderr, "[legacy-asi] Loaded explicitly enabled module: %s\n", modules[i].nameUtf8.c_str());
         if (InterlockedCompareExchange(&reentrantAttempt, 0, 0))
             return Fail("Reentrant ASI initialization occurred during loading; loaded ASIs remain alive. Abort startup.");
+        const auto id = ModMenu::NormalizeId(modules[i].nameUtf8);
+        for (auto& entry : menuEntries)
+            if (entry.id == id) { entry.loaded = true; break; }
     }
     return true;
 }
@@ -505,6 +528,31 @@ bool HaveLoadedModules() { return LoadedModuleCount() != 0; }
 bool ModuleExecutionAttempted() { return InterlockedCompareExchange(&executionAttempted, 0, 0) != 0; }
 unsigned LoadedModuleCount() { return static_cast<unsigned>(InterlockedCompareExchange(&loadedCount, 0, 0)); }
 const char* LoaderError() { return errorText; }
+
+void AppendModMenuEntries(std::vector<ModMenu::Entry>& entries)
+{
+    if (menuEntries.empty()) return;
+    ModMenu::DisabledSet disabled;
+    const bool readable = ModMenu::ReadDisabled(menuStatePath, disabled);
+    for (auto entry : menuEntries) {
+        entry.canToggle = entry.canToggle && readable;
+        if (entry.canToggle) {
+            const bool selected = disabled.count(entry.id) == 0;
+            entry.pending = selected != entry.enabled;
+            entry.enabled = selected;
+        }
+        entries.push_back(std::move(entry));
+    }
+}
+
+bool SetModMenuEnabled(const std::string& id, bool enabled)
+{
+    for (const auto& entry : menuEntries) {
+        if (entry.canToggle && entry.id == id)
+            return ModMenu::SetEnabled(menuStatePath, id, enabled);
+    }
+    return false;
+}
 
 } // namespace LegacyAsi
 

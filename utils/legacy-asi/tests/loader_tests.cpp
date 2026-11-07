@@ -29,6 +29,7 @@ BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
 #include "legacy_asi_loader.h"
 #include "legacy_asi_memory.h"
 #include "canonical_test_arena.h"
+#include "mod_menu.h"
 
 #include <cstdio>
 #include <cwchar>
@@ -115,7 +116,7 @@ void CheckSourceLocks(const std::wstring& directory, bool expectLocked)
     FindClose(search);
 }
 
-bool Run(const wchar_t* directory, bool expectedSuccess, unsigned expectedCount, bool expectedExecution)
+bool Run(const wchar_t* directory, bool expectedSuccess, unsigned expectedCount, bool expectedExecution, bool checkMenu)
 {
     using namespace LegacyAsi;
     // Preflight-only cases must not execute any DLL, so they must not depend
@@ -142,6 +143,23 @@ bool Run(const wchar_t* directory, bool expectedSuccess, unsigned expectedCount,
     Check(HaveLoadedModules() == (expectedCount != 0), "HaveLoadedModules agrees with count");
     Check(ModuleExecutionAttempted() == expectedExecution, "execution-attempt latch matches expected outcome");
     if (!result) Check(LoaderError()[0] != '\0', "failed load reports a concrete diagnostic");
+    if (checkMenu) {
+        std::vector<ModMenu::Entry> rows;
+        AppendModMenuEntries(rows);
+        Check(rows.size() == 1 && rows[0].id == "fixture_one.asi" && !rows[0].enabled &&
+              !rows[0].loaded && !rows[0].pending && rows[0].canToggle, "suppressed allowlist row is manageable, not loaded");
+        Check(!SetModMenuEnabled("not-listed.asi", true), "menu cannot authorize an unlisted binary");
+        Check(SetModMenuEnabled("fixture_one.asi", true), "queue enable of a hash-pinned fixture");
+        rows.clear();
+        AppendModMenuEntries(rows);
+        Check(rows.size() == 1 && rows[0].enabled && rows[0].pending && !rows[0].loaded && !ModuleExecutionAttempted(),
+              "queued enable does not execute or change current loaded count");
+        Check(SetModMenuEnabled("fixture_one.asi", false), "restore fixture's original selection");
+        rows.clear();
+        AppendModMenuEntries(rows);
+        Check(rows.size() == 1 && !rows[0].enabled && !rows[0].pending && !rows[0].loaded,
+              "returning to startup selection clears pending state");
+    }
 
     HMODULE first = GetModuleHandleW(L"fixture_one.asi");
     HMODULE second = GetModuleHandleW(L"fixture_two.asi");
@@ -180,7 +198,7 @@ bool Run(const wchar_t* directory, bool expectedSuccess, unsigned expectedCount,
 
 int wmain(int argc, wchar_t** argv)
 {
-    if (argc != 5) {
+    if (argc != 5 && (argc != 6 || std::wcscmp(argv[5], L"menu") != 0)) {
         std::fprintf(stderr, "Usage: loader_tests.exe ABSOLUTE_CASE_DIRECTORY expected-success expected-count expected-execution\n");
         return 2;
     }
@@ -194,7 +212,7 @@ int wmain(int argc, wchar_t** argv)
         std::fprintf(stderr, "Cannot adopt the canonical test image (Windows: %lu). No ASI was executed.\n", GetLastError());
         return 1;
     }
-    const bool completed = Run(argv[1], expectedSuccess, expectedCount, expectedExecution);
+    const bool completed = Run(argv[1], expectedSuccess, expectedCount, expectedExecution, argc == 6);
     std::printf("Loader case: %u checks, %u failures.\n", checks, failures);
     return completed ? 0 : 1;
 }

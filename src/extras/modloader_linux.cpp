@@ -3,6 +3,7 @@
 
 #if defined(MODLOADER) && defined(__linux__)
 #include "common.h"
+#include "mod_menu.h"
 #include "modloader_folder.h"
 #include "CdStream.h"
 #include "Directory.h"
@@ -168,6 +169,20 @@ void ModLoader_Shutdown()
     state.special.clear();
     state.index.Clear();
     state.initialized = false;
+}
+
+bool ModLoader_GetMenuRows(std::vector<ModMenu::ResourceRow>& rows)
+{
+    if (!State().initialized) {
+        rows.clear();
+        return false;
+    }
+    return State().index.GetMenuRows(rows);
+}
+
+bool ModLoader_SetMenuEnabled(const std::string& id, bool enabled)
+{
+    return State().initialized && State().index.SetMenuEnabled(id, enabled);
 }
 
 // Immutable startup index: install/remove mods and change profiles with the

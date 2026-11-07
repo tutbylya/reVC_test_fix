@@ -5,6 +5,8 @@ on:
   push:
     paths:
       - 'src/extras/legacy_asi*'
+      - 'src/extras/mod_menu*'
+      - 'src/core/Frontend*'
       - 'src/core/Game.cpp'
       - 'src/core/main.cpp'
       - 'src/skel/glfw/glfw.cpp'
@@ -18,6 +20,8 @@ on:
   pull_request:
     paths:
       - 'src/extras/legacy_asi*'
+      - 'src/extras/mod_menu*'
+      - 'src/core/Frontend*'
       - 'src/core/Game.cpp'
       - 'src/core/main.cpp'
       - 'src/skel/glfw/glfw.cpp'

@@ -2,6 +2,11 @@
 
 #if defined(REVC_LEGACY_ASI) && defined(_WIN32) && defined(_MSC_VER) && defined(_M_IX86)
 
+#include <string>
+#include <vector>
+
+namespace ModMenu { struct Entry; }
+
 namespace LegacyAsi {
 
 // Startup/main-thread API. Only explicitly listed, SHA-256 pinned modules in
@@ -16,6 +21,8 @@ bool HaveLoadedModules();
 bool ModuleExecutionAttempted();
 unsigned LoadedModuleCount();
 const char* LoaderError();
+void AppendModMenuEntries(std::vector<ModMenu::Entry>& entries);
+bool SetModMenuEnabled(const std::string& id, bool enabled);
 
 // Successfully loaded ASIs and their read-locked source files intentionally
 // remain alive until process exit. There is no unsafe generic unload API for

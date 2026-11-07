@@ -1,5 +1,10 @@
 #include "modloader_folder.h"
 
+// The game uses this backend on Linux. Windows also builds the same code for
+// portable data-only tests. Don't require desktop filesystem APIs elsewhere.
+#if defined(__linux__) || defined(_WIN32)
+#include "mod_menu_storage.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
@@ -8,6 +13,7 @@
 #include <set>
 #include <sstream>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace ModLoaderFolder {
@@ -312,12 +318,27 @@ void Select(std::map<std::string, File>& index, const std::string& key, const Fi
     const auto previous = index.find(key);
     if (previous == index.end() || previous->second.priority <= file.priority) index[key] = file;
 }
+
+bool IsResource(const std::string& key)
+{
+    // Count indexed resource packs, not documentation-only or empty folders.
+    // Leave lookup behavior unchanged for custom extensions referenced by DAT.
+    const auto dot = key.rfind('.');
+    if (dot == std::string::npos) return false;
+    const auto extension = key.substr(dot);
+    return extension == ".dff" || extension == ".txd" || extension == ".col" ||
+        extension == ".ifp" || extension == ".img" || extension == ".dir" ||
+        extension == ".ide" || extension == ".ipl" || extension == ".dat" ||
+        extension == ".cfg" || extension == ".scm" || extension == ".gxt" ||
+        extension == ".bmp" || extension == ".mpg" || extension == ".mpeg";
+}
 } // namespace
 
 void Index::Clear()
 {
     filesByPath_.clear();
     filesByName_.clear();
+    menuRows_.clear();
     root_.clear();
     modloaderRoot_.clear();
 }
@@ -337,6 +358,12 @@ bool Index::Scan(const std::string& gameRoot)
     if (error == std::errc::no_such_file_or_directory || (!error && !fs::exists(modsStatus))) return true;
     if (error || !fs::is_directory(modsStatus) || fs::is_symlink(modsStatus)) { Warn("Invalid modloader directory", modloaderRoot_); return false; }
 
+    ModMenu::DisabledSet disabled;
+    if (!ModMenu::ReadDisabled(mods / ".revc-disabled", disabled)) {
+        Warn("Invalid mod menu state; mod loading disabled", modloaderRoot_);
+        return false;
+    }
+
     Configuration config;
     config.profiles["default"].defined = true;
     const fs::path profileDirectory = mods / ".profiles";
@@ -351,14 +378,28 @@ bool Index::Scan(const std::string& gameRoot)
     std::map<std::string, Profile> resolved;
     size_t inheritanceBudget = 262144;
     if (!config.supported || !Inherit(config, config.selected, selected, visiting, resolved, inheritanceBudget)) return false;
-    if (selected.ignoreAll) return true;
-
-    for (const fs::path& mod : Children(mods, true)) {
-        const std::string name = Fold(PathText(mod.filename()));
+    const auto folders = Children(mods, true);
+    std::map<std::string, unsigned> idCounts;
+    for (const auto& folder : folders) {
+        const std::string id = ModMenu::NormalizeId(PathText(folder.filename()));
+        if (ModMenu::IsValidId(id)) ++idCounts[id];
+    }
+    for (const fs::path& mod : folders) {
+        const std::string displayName = PathText(mod.filename());
+        const std::string name = Fold(displayName);
+        if (name.empty() || name.front() == '.' || name == "_ignore") continue;
         const auto priorityEntry = selected.priorities.find(name);
         const int priority = priorityEntry == selected.priorities.end() ? 50 : priorityEntry->second;
-        if (name.empty() || name.front() == '.' || name == "_ignore" || priority == 0 ||
-            Matches(selected.ignoreMods, name) || (selected.excludeAll && !Matches(selected.includeMods, name))) continue;
+        const bool profileEnabled = !selected.ignoreAll && priority != 0 &&
+            !Matches(selected.ignoreMods, name) && (!selected.excludeAll || Matches(selected.includeMods, name));
+        const std::string id = ModMenu::NormalizeId(displayName);
+        const bool canIdentify = ModMenu::IsValidId(id);
+        ModMenu::ResourceRow row{id, displayName, false,
+            profileEnabled && !disabled.count(id), profileEnabled && canIdentify && idCounts[id] == 1, false};
+        if (!row.enabled) {
+            menuRows_.push_back(std::move(row));
+            continue;
+        }
         std::vector<fs::path> files;
         fs::recursive_directory_iterator entry(mod, fs::directory_options::skip_permission_denied, error), end;
         if (error) Warn("Cannot scan mod", PathText(mod));
@@ -385,11 +426,57 @@ bool Index::Scan(const std::string& gameRoot)
             if (error || size > std::numeric_limits<uint64_t>::max()) { Warn("Cannot measure mod resource", file.path); continue; }
             file.size = static_cast<uint64_t>(size);
             file.priority = priority;
+            file.menuRow = menuRows_.size();
             Select(filesByPath_, key, file);
             Select(filesByName_, Fold(PathText(path.filename())), file);
         }
+        menuRows_.push_back(std::move(row));
+    }
+    // Attribute winning resources only. A higher-priority basename also
+    // overrides a lower-priority exact path (same rule as Resolve()).
+    for (const auto& item : filesByName_)
+        if (item.second.size && IsResource(item.first)) menuRows_[item.second.menuRow].loaded = true;
+    for (const auto& item : filesByPath_) {
+        if (!item.second.size || !IsResource(item.first)) continue;
+        const auto slash = item.first.find_last_of('/');
+        const auto named = filesByName_.find(item.first.substr(slash == std::string::npos ? 0 : slash + 1));
+        if (named == filesByName_.end() || named->second.priority <= item.second.priority)
+            menuRows_[item.second.menuRow].loaded = true;
     }
     return true;
+}
+
+bool Index::GetMenuRows(std::vector<ModMenu::ResourceRow>& rows) const
+{
+    ModMenu::DisabledSet disabled;
+    if (modloaderRoot_.empty() || !ModMenu::ReadDisabled(Utf8Path(modloaderRoot_) / ".revc-disabled", disabled)) {
+        // Still report the known startup inventory; a broken sidecar locks
+        // changes rather than pretending those mods were unloaded.
+        rows = menuRows_;
+        for (auto& row : rows) row.manageable = false;
+        return !modloaderRoot_.empty();
+    }
+    rows = menuRows_;
+    for (auto& row : rows) {
+        if (!row.manageable) continue;
+        const bool enabled = !disabled.count(row.id);
+        row.pending = enabled != row.enabled;
+        row.enabled = enabled;
+    }
+    return true;
+}
+
+bool Index::SetMenuEnabled(const std::string& id, bool enabled) const
+{
+    const auto row = std::find_if(menuRows_.begin(), menuRows_.end(), [&](const ModMenu::ResourceRow& candidate) {
+        return candidate.id == id && candidate.manageable;
+    });
+    if (row == menuRows_.end()) return false;
+    std::error_code error;
+    const auto directory = Utf8Path(modloaderRoot_);
+    const auto status = fs::symlink_status(directory / Utf8Path(row->name), error);
+    return !error && fs::is_directory(status) && !fs::is_symlink(status) &&
+        ModMenu::SetEnabled(directory / ".revc-disabled", id, enabled);
 }
 
 const char* Index::Resolve(const char* request) const
@@ -415,3 +502,5 @@ const char* Index::Resolve(const char* request) const
 }
 
 } // namespace ModLoaderFolder
+
+#endif

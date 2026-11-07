@@ -41,6 +41,170 @@ index 7ffe286..cc3cedb 100644
      current_profile = nullptr;
  }
  
+diff --git a/src/core/loader.cpp b/src/core/loader.cpp
+index 0c0df10..0f3ff4a 100644
+--- a/src/core/loader.cpp
++++ b/src/core/loader.cpp
+@@ -8,6 +8,8 @@
+ #include <modloader/modloader_re3.h>
+ #include <modloader/modloader_reVC.h>
+ #include <unicode.hpp>
++#include "../../build-revc/mod_menu_state.h"
++#include <sstream>
+ using namespace modloader;
+ 
+ #ifndef NDEBUG
+@@ -22,6 +24,87 @@ REGISTER_ML_NULL();
+ // Mod Loader object
+ Loader loader;
+ 
++namespace {
++std::string ReVCModNameUtf8(const std::string& name)
++{
++    wchar_t wide[MAX_PATH];
++    char utf8[MAX_PATH * 4];
++    const int wideLength = MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, name.c_str(), -1, wide, MAX_PATH);
++    if (!wideLength) return {};
++    const int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide, wideLength,
++                                         utf8, sizeof(utf8), nullptr, nullptr);
++    return length ? std::string(utf8, length - 1) : std::string{};
++}
++
++bool ReadReVCDisabledMods(std::set<std::string>& disabled)
++{
++    // The game's directory is current at loader startup. Snapshot once: the
++    // hidden file is not a profile and the watcher must never apply it live.
++    const DWORD folder = GetFileAttributesW(L"modloader");
++    if (folder == INVALID_FILE_ATTRIBUTES || (folder & FILE_ATTRIBUTE_REPARSE_POINT)) return false;
++    const HANDLE file = CreateFileW(L"modloader\\.revc-disabled", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
++                                   nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
++    if (file == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_FILE_NOT_FOUND;
++    BY_HANDLE_FILE_INFORMATION info = {};
++    char bytes[ModMenu::MaxStateBytes];
++    LARGE_INTEGER length = {};
++    DWORD size = 0;
++    const bool read = GetFileType(file) == FILE_TYPE_DISK && GetFileInformationByHandle(file, &info) &&
++        !(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
++        GetFileSizeEx(file, &length) && length.QuadPart >= 0 && length.QuadPart <= sizeof(bytes) &&
++        ReadFile(file, bytes, static_cast<DWORD>(length.QuadPart), &size, nullptr) && size == length.QuadPart;
++    CloseHandle(file);
++    if (!read) return false;
++    std::istringstream stream{std::string(bytes, size)};
++    return ModMenu::ParseDisabled(stream, disabled);
++}
++}
++
++void Loader::ReadReVCMenuState()
++{
++    this->revcMenuDisabled.clear();
++    this->revcMenuPolicyValid = ReadReVCDisabledMods(this->revcMenuDisabled);
++    if (!this->revcMenuPolicyValid) Log("Cannot read modloader/.revc-disabled safely; resource mods will not be installed.");
++}
++
++bool Loader::IsReVCMenuDisabled(const std::string& folderName) const
++{
++    if (this->game_id != MODLOADER_GAME_REVC) return false;
++    return !this->revcMenuPolicyValid ||
++        this->revcMenuDisabled.count(ModMenu::NormalizeId(ReVCModNameUtf8(folderName))) != 0;
++}
++
++bool Loader::VisitReVCMods(ReVCModVisitor visitor, void* context)
++{
++    if (!visitor) return false;
++    if (!this->bRunning) return true; // No mod directory, no installed resources.
++    if (this->game_id != MODLOADER_GAME_REVC) return false;
++    // Called on the host main thread, not from the file-watcher thread. Only
++    // installed resources count, not the plug-ins or empty mod directories.
++    auto mods = this->mods.GetModsByName();
++    if (mods.size() > 4096) return false;
++    for (const ModInformation& mod : mods)
++    {
++        const std::string label = ReVCModNameUtf8(mod.menu_name);
++        const std::string id = ModMenu::NormalizeId(label);
++        const bool installed = std::any_of(mod.files.begin(), mod.files.end(),
++            [](const decltype(mod.files)::value_type& entry) { return entry.second.IsInstalled(); });
++        const bool blocked = !this->revcMenuPolicyValid || !ModMenu::IsValidId(id) ||
++            this->mods.Profile().IsIgnoring() || this->mods.Profile().IsIgnored(mod.GetName());
++        const bool disabled = this->revcMenuDisabled.count(id) != 0;
++        visitor(context, id.c_str(), label.c_str(),
++                (installed ? 1u : 0u) | (blocked ? 2u : 0u) | (disabled ? 4u : 0u));
++    }
++    return true;
++}
++
++// Optional API: old game builds and old DLLs retain the existing bridge ABI.
++extern "C" int __declspec(dllexport) __cdecl modloader_VisitReVCMods(Loader::ReVCModVisitor visitor, void* context)
++{
++    try { return loader.VisitReVCMods(visitor, context) ? 1 : 0; }
++    catch (...) { return 0; }
++}
++
+ /*
+  * DllMain
+  *      Entry-point
+@@ -380,6 +463,7 @@ void Loader::Startup(uint8_t game_id)
+         this->StartupMenu();
+         this->LoadPlugins();        // Load plugins at /modloader/.data/plugins
+         this->BeforeFirstScan();
++        if (game_id == MODLOADER_GAME_REVC) this->ReadReVCMenuState();
+         this->ScanAndUpdate();      // Search and install mods at /modloader
+         this->StartupWatcher();     // Startups the automatic refresher
+ 
+diff --git a/src/core/loader.hpp b/src/core/loader.hpp
+index 2ed37d9..6725da0 100644
+--- a/src/core/loader.hpp
++++ b/src/core/loader.hpp
+@@ -228,6 +228,7 @@ class Loader : public modloader_t
+                 friend struct PriorityPred<ModInformation>;
+                 FolderInformation&          parent;         // Owner of this mod
+                 std::string                 path;           // Path for this mod (relative to game dir), normalized
++                std::string                 menu_name;      // Original folder spelling for the reVC frontend
+                 std::string                 name;           // Name for this mod, this is the filename in path (normalized)
+                 std::map<std::string, FileInformation>  files; // Files inside this mod
+                 Status                      status;         // Mod status
+@@ -236,7 +237,7 @@ class Loader : public modloader_t
+             public:
+                 // Initializer
+                 ModInformation(std::string name, FolderInformation& parent, uint64_t id)
+-                    : name(NormalizePath(std::move(name))), parent(parent), status(Status::Unchanged), ignored(false)
++                    : parent(parent), menu_name(name), name(NormalizePath(std::move(name))), status(Status::Unchanged), ignored(false)
+                 {
+                     this->id = id;
+                     this->priority = default_priority;
+@@ -506,6 +507,10 @@ class Loader : public modloader_t
+         // Mod Profiles
+         std::string modprof_cmd;    // -modprof <modname> received from command line (modname content)
+ 
++        std::set<std::string> revcMenuDisabled;
++        bool revcMenuPolicyValid = true;
++        void ReadReVCMenuState();
++
+         // Shared Data
+         std::map<std::string, modloader_shdata_t> shdata;   // Shared data between plugins
+ 
+@@ -560,6 +565,9 @@ class Loader : public modloader_t
+         bool InitFromREVC(struct modloader_reVC_t*);
+         void Startup(uint8_t game_id);
+         void Shutdown();
++        using ReVCModVisitor = void (__cdecl*)(void*, const char*, const char*, unsigned);
++        bool VisitReVCMods(ReVCModVisitor visitor, void* context);
++        bool IsReVCMenuDisabled(const std::string& folderName) const;
+         
+         // Logging functions
+         static void LogGameVersion();
+diff --git a/src/core/modinfo.cpp b/src/core/modinfo.cpp
+index c5b223a..afe572f 100644
+--- a/src/core/modinfo.cpp
++++ b/src/core/modinfo.cpp
+@@ -233,7 +233,7 @@ void Loader::ModInformation::InstallNecessaryFiles()
+  */
+ Loader::ModInformation& Loader::ModInformation::UpdateIgnoreStatus()
+ {
+-    this->ignored = parent.Profile().IsIgnored(this->GetName());
++    this->ignored = parent.Profile().IsIgnored(this->GetName()) || loader.IsReVCMenuDisabled(this->menu_name);
+     return *this;
+ }
+ 
 diff --git a/src/plugins/gta3/std.stream/backend.cpp b/src/plugins/gta3/std.stream/backend.cpp
 index 0f23aef..b986f77 100644
 --- a/src/plugins/gta3/std.stream/backend.cpp

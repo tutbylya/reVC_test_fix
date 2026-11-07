@@ -121,7 +121,7 @@ if (!$actualDiff -and !$PackageOnly) {
     $actualDiff = Get-GitText @('-C', $SourceDirectory, 'diff', '--binary', 'HEAD', '--')
 }
 if ($actualDiff -cne $expectedDiff) {
-    throw 'Source changes do not exactly match revc-compat.patch. No reset/cleanup was performed.'
+    throw 'Source changes do not exactly match revc-compat.patch. No reset/cleanup was performed. For a previous patch version, use a fresh -SourceDirectory.'
 }
 if ($PrepareOnly) {
     Write-Output "Pinned Mod Loader sources and compatibility patch verified: $SourceDirectory"
@@ -137,6 +137,11 @@ try {
         if (!(Test-Path -LiteralPath $premake -PathType Leaf)) { throw 'Bundled premake5.exe is missing from the game repository root.' }
         $buildTool = Find-MSBuild
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'revc-premake.lua') -Destination (Join-Path $SourceDirectory 'revc-test-fix.premake.lua') -Force
+        # Use the exact same C++14 parser as the host and native Linux backend.
+        # This is generated input, not an extra change to the pinned checkout.
+        $generated = Join-Path $SourceDirectory 'build-revc'
+        New-Item -ItemType Directory -Path $generated -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $repositoryRoot 'src/extras/mod_menu_state.h') -Destination (Join-Path $generated 'mod_menu_state.h') -Force
         # Premake's narrow-character path handling needs an ASCII working path.
         # Never reuse M: (or any other pre-existing drive mapping).
         foreach ($letter in @('Z', 'Y', 'X', 'W', 'V', 'U', 'T', 'S', 'R', 'Q', 'P', 'O', 'N')) {

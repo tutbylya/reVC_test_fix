@@ -915,6 +915,12 @@ CONTROLLER_DUALSENSE,
 	int DisplaySlider(float, float, float, float, float, float, float);
 	void DoSettingsBeforeStartingAGame();
 	void DrawStandardMenus(bool);
+#if defined(MODLOADER) || defined(REVC_LEGACY_ASI)
+	bool IsModMenuScreen() const;
+	bool ProcessModMenuInput();
+	void DrawModMenu();
+	void DrawModMenuShortcut();
+#endif
 	void DrawControllerBound(int32, int32, int32, int8);
 	void DrawControllerScreenExtraText(int, int, int);
 	void DrawControllerSetupScreen();

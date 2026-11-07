@@ -11,6 +11,8 @@
 #include "common.h"
 #include "crossplatform.h"
 #include "modloader_reVC.h"
+#include "mod_menu.h"
+#include "mod_menu_storage.h"
 #include "Streaming.h"
 #include "Directory.h"
 #include "CdStream.h"
@@ -25,9 +27,11 @@
 extern void PlayMovieInWindow(int, const char*);
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <string>
+#include <utility>
 
 extern RwUInt32 gGameState;
 extern BOOL _gbCdStreamOverlapped, _gbCdStreamAsync;
@@ -42,6 +46,44 @@ std::atomic<bool> callbacksActive{false};
 modloader_reVC_t modloader_reVC_share = {};
 std::string previousEnvironment;
 bool environmentChanged, environmentExisted;
+std::filesystem::path menuStatePath;
+
+using VisitMods = int (__cdecl*)(void (__cdecl*)(void*, const char*, const char*, unsigned), void*);
+
+struct MenuRows {
+    std::vector<ModMenu::ResourceRow> rows;
+    ModMenu::DisabledSet nextDisabled;
+    bool stateReadable = false;
+    bool failed = false;
+};
+
+void __cdecl ReceiveMenuRow(void* opaque, const char* id, const char* label, unsigned flags)
+{
+    auto& snapshot = *static_cast<MenuRows*>(opaque);
+    if (snapshot.failed) return;
+    if (!id || !label || (flags & ~7u) || snapshot.rows.size() >= 4096) {
+        snapshot.failed = true;
+        return;
+    }
+    // Keep exceptions inside the host CRT rather than crossing the DLL ABI.
+    try {
+        ModMenu::ResourceRow row;
+        row.id = id;
+        row.name = label;
+        row.loaded = (flags & 1u) != 0;
+        const bool blocked = (flags & 2u) != 0;
+        const bool startupDisabled = (flags & 4u) != 0;
+        const bool nextDisabled = snapshot.stateReadable
+            ? snapshot.nextDisabled.count(row.id) != 0 : startupDisabled;
+        row.manageable = !blocked && snapshot.stateReadable &&
+            ModMenu::IsValidId(row.id) && ModMenu::NormalizeId(row.id) == row.id;
+        row.enabled = !blocked && !nextDisabled;
+        row.pending = row.manageable && startupDisabled != nextDisabled;
+        snapshot.rows.push_back(std::move(row));
+    } catch (...) {
+        snapshot.failed = true;
+    }
+}
 
 void OriginalMovie(int show, const char* filename)
 {
@@ -249,6 +291,7 @@ void ResetLoader()
     modloader_reVC_share = {};
     if (hModLoader) FreeLibrary(hModLoader);
     hModLoader = nullptr;
+    menuStatePath.clear();
     RestoreEnvironment();
 }
 } // namespace
@@ -273,6 +316,7 @@ void ModLoader_Init()
         fprintf(stderr, "[modloader] Ignoring incompatible ASI: expected a matching-architecture reVC build.\n");
         return;
     }
+    menuStatePath = std::filesystem::path(path).parent_path() / L"modloader" / L".revc-disabled";
 
     const DWORD oldLength = GetEnvironmentVariableA("MODLOADER_REVC", nullptr, 0);
     environmentExisted = oldLength != 0;
@@ -328,6 +372,30 @@ void ModLoader_Tick()
 {
     if (callbacksActive.load(std::memory_order_acquire) && modloader_reVC_share.Tick)
         modloader_reVC_share.Tick(&modloader_reVC_share);
+}
+
+bool ModLoader_GetMenuRows(std::vector<ModMenu::ResourceRow>& rows)
+{
+    rows.clear();
+    if (!callbacksActive.load(std::memory_order_acquire) || !hModLoader) return true;
+    const auto visit = reinterpret_cast<VisitMods>(GetProcAddress(hModLoader, "modloader_VisitReVCMods"));
+    if (!visit) return false; // Old package: an unknown count is not zero.
+    MenuRows snapshot;
+    snapshot.stateReadable = !menuStatePath.empty() && ModMenu::ReadDisabled(menuStatePath, snapshot.nextDisabled);
+    if (visit(ReceiveMenuRow, &snapshot) != 1 || snapshot.failed) return false;
+    rows.swap(snapshot.rows);
+    return true;
+}
+
+bool ModLoader_SetMenuEnabled(const std::string& id, bool enabled)
+{
+    if (menuStatePath.empty()) return false;
+    std::vector<ModMenu::ResourceRow> rows;
+    if (!ModLoader_GetMenuRows(rows)) return false;
+    const auto row = std::find_if(rows.begin(), rows.end(), [&id](const ModMenu::ResourceRow& candidate) {
+        return candidate.id == id && candidate.manageable;
+    });
+    return row != rows.end() && ModMenu::SetEnabled(menuStatePath, id, enabled);
 }
 
 bool ModLoader_StopCdStreamThread()

@@ -89,3 +89,7 @@ jobs:
           build/resource-parser-tests/parsers
           g++ -std=c++17 -Wall -Wextra -Werror -Isrc/extras utils/tests/remastered_ui_tests.cpp src/extras/remastered_ui.cpp -o build/resource-parser-tests/native-ui
           build/resource-parser-tests/native-ui
+          g++ -std=c++17 -Wall -Wextra -Werror utils/modloader/test-mod-menu-state.cpp src/extras/modloader_folder.cpp -o build/resource-parser-tests/mod-menu
+          build/resource-parser-tests/mod-menu
+          g++ -std=c++17 -Wall -Wextra -Werror utils/modloader/test-mod-menu-text.cpp -o build/resource-parser-tests/mod-menu-text
+          build/resource-parser-tests/mod-menu-text

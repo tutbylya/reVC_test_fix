@@ -13,7 +13,15 @@ cl /nologo /utf-8 /std:c++17 /EHsc /W4 /WX /MT utils\modloader\test-resource-par
 if errorlevel 1 goto failed
 cl /nologo /utf-8 /std:c++17 /EHsc /W4 /WX /MT /Isrc\extras utils\tests\remastered_ui_tests.cpp src\extras\remastered_ui.cpp /Fobuild\resource-parser-tests\ /Febuild\resource-parser-tests\native-ui-tests.exe
 if errorlevel 1 goto failed
+cl /nologo /utf-8 /std:c++17 /EHsc /W4 /WX /MT utils\modloader\test-mod-menu-state.cpp src\extras\modloader_folder.cpp /Fobuild\resource-parser-tests\ /Febuild\resource-parser-tests\mod-menu-state-tests.exe
+if errorlevel 1 goto failed
+cl /nologo /utf-8 /std:c++17 /EHsc /W4 /WX /MT utils\modloader\test-mod-menu-text.cpp /Fobuild\resource-parser-tests\ /Febuild\resource-parser-tests\mod-menu-text-tests.exe
+if errorlevel 1 goto failed
 if /i "%~1"=="--build-only" goto built
+build\resource-parser-tests\mod-menu-state-tests.exe
+if errorlevel 1 goto failed
+build\resource-parser-tests\mod-menu-text-tests.exe
+if errorlevel 1 goto failed
 build\resource-parser-tests\native-ui-tests.exe
 if errorlevel 1 goto failed
 if exist "build\modloader-game-test\data\handling.cfg" (

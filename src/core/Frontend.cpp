@@ -38,8 +38,13 @@
 #ifdef MODLOADER
 #include "modloader.h"
 #endif
+#if defined(MODLOADER) || defined(REVC_LEGACY_ASI)
+#include "mod_menu.h"
+#include "frontend_mod_text.h"
+#endif
 
 #include <string>
+#include <algorithm>
 
 // Similar story to Hud.cpp:
 // Game has colors inlined in code.
@@ -2750,6 +2755,401 @@ CMenuManager::DrawControllerSetupScreen()
 #endif
 }
 
+#if defined(MODLOADER) || defined(REVC_LEGACY_ASI)
+namespace {
+
+constexpr int ModRowsVisible = 8;
+constexpr float ModRowsTop = 118.0f;
+constexpr float ModRowHeight = 24.0f;
+constexpr float ModLeft = 77.0f;
+constexpr float ModRight = 556.0f;
+constexpr float ModBarLeft = 565.0f;
+constexpr float ModBarRight = 573.0f;
+constexpr float ModBackTop = 394.0f;
+constexpr float ModBackBottom = 423.0f;
+
+struct ModMenuView {
+	ModMenu::Snapshot snapshot;
+	uint32 lastRefresh = 0;
+	bool read = false;
+	bool open = false;
+	int selected = 0;
+	int first = 0;
+	int pressedRow = -1;
+	bool dragging = false;
+	float dragOffset = 0.0f;
+	enum Notice { None, SaveFailed, ReadOnly } notice = None;
+};
+
+ModMenuView &ModsView()
+{
+	static ModMenuView view;
+	return view;
+}
+
+float ModX(float x) { return SCALE_AND_CENTER_X(x); }
+float ModY(float y) { return SCREEN_SCALE_Y(y); }
+
+bool ModHit(float x, float y, float left, float top, float right, float bottom)
+{
+	return x >= left && x < right && y >= top && y < bottom;
+}
+
+bool ModShortcutHit(float x, float y)
+{
+	return ModHit(x, y, SCREEN_STRETCH_X(15.0f), SCREEN_SCALE_FROM_BOTTOM(38.0f),
+	              SCREEN_STRETCH_X(238.0f), SCREEN_SCALE_FROM_BOTTOM(9.0f));
+}
+
+FrontendModText::Atlas ModFontAtlas(int language)
+{
+#ifdef MORE_LANGUAGES
+	if(language == CMenuManager::LANGUAGE_RUSSIAN) return FrontendModText::Atlas::Russian;
+	if(language == CMenuManager::LANGUAGE_UKRAINIAN) return FrontendModText::Atlas::Ukrainian;
+#else
+	(void)language;
+#endif
+	return FrontendModText::Atlas::Latin;
+}
+
+FrontendModText::Text ModLabel(const char16_t *english, const char16_t *russian, FrontendModText::Atlas atlas)
+{
+	FrontendModText::Text label;
+	label.Append(atlas == FrontendModText::Atlas::Russian ? russian : english, atlas);
+	return label;
+}
+
+void PrintModLabel(float x, float y, const char16_t *english, const char16_t *russian, FrontendModText::Atlas atlas)
+{
+	auto label = ModLabel(english, russian, atlas);
+	CFont::PrintString(x, y, label.glyphs);
+}
+
+void FitModName(FrontendModText::Text &name, float width)
+{
+	if(!name.size || CFont::GetStringWidth(name.glyphs, true) <= width) return;
+	const auto full = name;
+	auto truncate = [&](size_t length) {
+		name = full;
+		name.size = length;
+		name.Append(u"...", FrontendModText::Atlas::Latin);
+	};
+	size_t low = 0, high = Min(full.size - 1, FrontendModText::Text::Capacity - 3);
+	while(low < high) {
+		const size_t mid = low + (high - low + 1) / 2;
+		truncate(mid);
+		if(CFont::GetStringWidth(name.glyphs, true) <= width) low = mid;
+		else high = mid - 1;
+	}
+	truncate(low);
+}
+
+void RefreshModView(bool force)
+{
+	auto &view = ModsView();
+	const uint32 now = CTimer::GetTimeInMillisecondsPauseMode();
+	if(!force && view.read && now - view.lastRefresh < 2000) return;
+	view.snapshot = ModMenu::Read();
+	view.read = true;
+	view.lastRefresh = now;
+}
+
+struct ModScrollbar {
+	float top, bottom, thumbTop, thumbBottom;
+};
+
+ModScrollbar ModScrollGeometry(int count, int first)
+{
+	const float top = ModY(ModRowsTop), bottom = ModY(ModRowsTop + ModRowsVisible * ModRowHeight);
+	const float height = bottom - top;
+	const float thumbHeight = Max(ModY(10.0f), height * ModRowsVisible / Max(count, ModRowsVisible));
+	const float thumbTop = top + (height - thumbHeight) * first / Max(1, count - ModRowsVisible);
+	return {top, bottom, thumbTop, thumbTop + thumbHeight};
+}
+
+void SelectModRow(ModMenuView &view, int row, int count)
+{
+	view.selected = Clamp(row, 0, count); // count is the Back button.
+	if(view.selected < count)
+		view.first = Clamp(view.first, Max(0, view.selected - ModRowsVisible + 1), view.selected);
+	view.first = Clamp(view.first, 0, Max(0, count - ModRowsVisible));
+}
+
+void ScrollModRows(ModMenuView &view, int first, int count)
+{
+	view.first = Clamp(first, 0, Max(0, count - ModRowsVisible));
+	if(view.selected < count)
+		view.selected = Clamp(view.selected, view.first, Min(count - 1, view.first + ModRowsVisible - 1));
+}
+
+} // namespace
+
+bool
+CMenuManager::IsModMenuScreen() const
+{
+	return m_bGameNotLoaded && !m_OnlySaveMenu && m_nCurrScreen == MENUPAGE_START_MENU;
+}
+
+void
+CMenuManager::DrawModMenuShortcut()
+{
+	RefreshModView(false);
+	const auto &view = ModsView();
+	const auto atlas = ModFontAtlas(m_PrefsLanguage);
+	auto text = ModLabel(u"Mods loaded: ", u"\u0417\u0430\u0433\u0440\u0443\u0436\u0435\u043d\u043e \u043c\u043e\u0434\u043e\u0432: ", atlas);
+	text.AppendUtf8(std::to_string(view.snapshot.loadedCount), atlas);
+	if(!view.snapshot.resourceInventoryKnown) text.Append(u"+", atlas);
+	text.Append(u"   [Tab]", atlas);
+	const bool hovered = m_bShowMouse && ModShortcutHit(m_nMousePosX, m_nMousePosY);
+	CFont::SetBackgroundOff();
+	CFont::SetRightJustifyOff();
+	CFont::SetPropOn();
+	CFont::SetFontStyle(FONT_LOCALE(FONT_STANDARD));
+	CFont::SetScale(SCREEN_SCALE_X(0.49f), ModY(0.95f));
+	CFont::SetWrapx(SCREEN_WIDTH);
+	CFont::SetDropShadowPosition(2);
+	CFont::SetDropColor(CRGBA(0, 0, 0, FadeIn(255)));
+	CFont::SetColor(CRGBA(255, hovered ? 210 : 150, 225, FadeIn(255)));
+	CFont::PrintString(SCREEN_STRETCH_X(22.0f), SCREEN_SCALE_FROM_BOTTOM(31.0f), text.glyphs);
+	CFont::SetDropShadowPosition(0);
+}
+
+void
+CMenuManager::DrawModMenu()
+{
+	const auto &view = ModsView();
+	const int count = static_cast<int>(view.snapshot.entries.size());
+	const auto atlas = ModFontAtlas(m_PrefsLanguage);
+	const bool pending = std::any_of(view.snapshot.entries.begin(), view.snapshot.entries.end(),
+	                                 [](const ModMenu::Entry &entry) { return entry.pending; });
+	auto color = [&](CRGBA c) { return CRGBA(c.r, c.g, c.b, FadeIn(c.a)); };
+
+	// The same slanted panels and selection colors used by Vice City's save lists.
+	CSprite2d::Draw2DPolygon(ModX(82.0f), ModY(94.0f), ModX(582.0f), ModY(90.0f),
+	                         ModX(70.0f), ModY(321.0f), ModX(571.0f), ModY(325.0f),
+	                         color(LIST_BACKGROUND_COLOR));
+	if(view.selected == count) {
+		CSprite2d::Draw2DPolygon(ModX(247.0f), ModY(ModBackTop + 2), ModX(401.0f), ModY(ModBackTop),
+		                         ModX(241.0f), ModY(ModBackBottom), ModX(395.0f), ModY(ModBackBottom - 2),
+		                         color(SELECTIONBORDER_COLOR));
+	} else if(view.selected >= view.first && view.selected < view.first + ModRowsVisible) {
+		const float top = ModRowsTop + (view.selected - view.first) * ModRowHeight;
+		CSprite2d::Draw2DPolygon(ModX(ModLeft + 8), ModY(top + 1), ModX(ModRight + 3), ModY(top),
+		                         ModX(ModLeft + 4), ModY(top + ModRowHeight), ModX(ModRight - 1), ModY(top + ModRowHeight - 1),
+		                         color(SELECTIONBORDER_COLOR));
+	}
+
+	if(count > ModRowsVisible) {
+		const auto bar = ModScrollGeometry(count, view.first);
+		CSprite2d::DrawRect(CRect(ModX(ModBarLeft), bar.top, ModX(ModBarRight), bar.bottom), color(SLIDEROFF_COLOR));
+		CSprite2d::DrawRect(CRect(ModX(ModBarLeft), bar.thumbTop, ModX(ModBarRight), bar.thumbBottom), color(SCROLLBAR_COLOR));
+	}
+
+	RESET_FONT_FOR_NEW_PAGE
+	SET_FONT_FOR_MENU_HEADER
+	CFont::SetColor(CRGBA(30, 30, 30, FadeIn(255)));
+	PrintModLabel(SCREEN_STRETCH_FROM_RIGHT(MENUHEADER_POS_X) - SCREEN_SCALE_X(7.0f), ModY(MENUHEADER_POS_Y + 7),
+	              u"Mods", u"\u041c\u043e\u0434\u044b", atlas);
+	CFont::SetColor(color(HEADER_COLOR));
+	PrintModLabel(SCREEN_STRETCH_FROM_RIGHT(MENUHEADER_POS_X), ModY(MENUHEADER_POS_Y), u"Mods", u"\u041c\u043e\u0434\u044b", atlas);
+
+	CFont::SetFontStyle(FONT_LOCALE(FONT_STANDARD));
+	CFont::SetWrapx(ModX(590.0f));
+	CFont::SetRightJustifyWrap(ModX(80.0f));
+	CFont::SetScale(SCREEN_SCALE_X(0.38f), ModY(0.79f));
+	CFont::SetDropShadowPosition(1);
+	CFont::SetDropColor(CRGBA(0, 0, 0, FadeIn(255)));
+	CFont::SetColor(color(LABEL_COLOR));
+	CFont::SetRightJustifyOff();
+	PrintModLabel(ModX(94.0f), ModY(97.0f), u"Mod", u"\u041c\u043e\u0434", atlas);
+	CFont::SetRightJustifyOn();
+	PrintModLabel(ModX(440.0f), ModY(97.0f), u"Loaded", u"\u0417\u0430\u0433\u0440\u0443\u0436\u0435\u043d", atlas);
+	PrintModLabel(ModX(550.0f), ModY(97.0f), u"Next start", u"\u041f\u0440\u0438 \u0437\u0430\u043f\u0443\u0441\u043a\u0435", atlas);
+
+	for(int i = view.first; i < count && i < view.first + ModRowsVisible; ++i) {
+		const auto &entry = view.snapshot.entries[i];
+		const float y = ModY(ModRowsTop + 3 + (i - view.first) * ModRowHeight);
+		CFont::SetColor(color(entry.canToggle ? MENUOPTION_COLOR : DARKMENUOPTION_COLOR));
+		CFont::SetRightJustifyOff();
+		FrontendModText::Text name;
+		if(entry.kind == ModMenu::Kind::Legacy) name.Append(u"ASI  ", atlas);
+		name.AppendUtf8(entry.name, atlas);
+		FitModName(name, ModX(376.0f) - ModX(94.0f));
+		CFont::PrintString(ModX(94.0f), y, name.glyphs);
+
+		CFont::SetRightJustifyOn();
+		if(entry.loaded) PrintModLabel(ModX(440.0f), y, u"Yes", u"\u0414\u0430", atlas);
+		else PrintModLabel(ModX(440.0f), y, u"No", u"\u041d\u0435\u0442", atlas);
+		CFont::PrintString(ModX(546.0f), y, TheText.Get(entry.enabled ? "FEM_ON" : "FEM_OFF"));
+		// A leading asterisk tells CFont not to print the string at all.
+		if(entry.pending) PrintModLabel(ModX(556.0f), y, u" *", u" *", atlas);
+	}
+
+	CFont::SetCentreOn();
+	CFont::SetCentreSize(ModX(576.0f) - ModX(64.0f));
+	CFont::SetColor(color(LABEL_COLOR));
+	if(!count && view.snapshot.resourceInventoryKnown)
+		PrintModLabel(ModX(320.0f), ModY(196.0f), u"No mods available", u"\u041d\u0435\u0442 \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u044b\u0445 \u043c\u043e\u0434\u043e\u0432", atlas);
+	if(!view.snapshot.resourceInventoryKnown)
+		PrintModLabel(ModX(320.0f), ModY(count ? 343.0f : 196.0f), u"Update Mod Loader for the full list", u"\u041e\u0431\u043d\u043e\u0432\u0438\u0442\u0435 Mod Loader \u0434\u043b\u044f \u043f\u043e\u043b\u043d\u043e\u0433\u043e \u0441\u043f\u0438\u0441\u043a\u0430", atlas);
+
+	if(view.notice == ModMenuView::SaveFailed)
+		PrintModLabel(ModX(320.0f), ModY(325.0f), u"Could not save mod setting", u"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c \u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0443", atlas);
+	else if(view.notice == ModMenuView::ReadOnly)
+		PrintModLabel(ModX(320.0f), ModY(325.0f), u"This mod cannot be changed here", u"\u042d\u0442\u043e\u0442 \u043c\u043e\u0434 \u043d\u0435\u043b\u044c\u0437\u044f \u043f\u0435\u0440\u0435\u043a\u043b\u044e\u0447\u0438\u0442\u044c \u0437\u0434\u0435\u0441\u044c", atlas);
+	else if(pending)
+		PrintModLabel(ModX(320.0f), ModY(325.0f), u"Restart the game to apply changes", u"\u0418\u0437\u043c\u0435\u043d\u0435\u043d\u0438\u044f \u0432\u0441\u0442\u0443\u043f\u044f\u0442 \u0432 \u0441\u0438\u043b\u0443 \u043f\u043e\u0441\u043b\u0435 \u043f\u0435\u0440\u0435\u0437\u0430\u043f\u0443\u0441\u043a\u0430", atlas);
+	else
+		PrintModLabel(ModX(320.0f), ModY(325.0f), u"Settings apply when the game starts", u"\u041d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438 \u043f\u0440\u0438\u043c\u0435\u043d\u044f\u044e\u0442\u0441\u044f \u043f\u0440\u0438 \u0437\u0430\u043f\u0443\u0441\u043a\u0435 \u0438\u0433\u0440\u044b", atlas);
+	PrintModLabel(ModX(320.0f), ModY(367.0f), u"Enter: toggle     Tab / Esc: back", u"Enter: \u043f\u0435\u0440\u0435\u043a\u043b\u044e\u0447\u0438\u0442\u044c     Tab / Esc: \u043d\u0430\u0437\u0430\u0434", atlas);
+	CFont::SetFontStyle(FONT_LOCALE(FONT_HEADING));
+	CFont::SetScale(SCREEN_SCALE_X(BIGTEXT_X_SCALE), ModY(BIGTEXT_Y_SCALE));
+	CFont::PrintString(ModX(320.0f), ModY(ModBackTop + 4), TheText.Get("FEDS_TB"));
+	CFont::SetDropShadowPosition(0);
+}
+
+bool
+CMenuManager::ProcessModMenuInput()
+{
+	auto &view = ModsView();
+	if(!IsModMenuScreen()) {
+		view.open = false;
+		return false;
+	}
+	if(!m_AllowNavigation || m_nMenuFadeAlpha != 255) return view.open;
+
+	CPad *pad = CPad::GetPad(0);
+	const bool alt = pad->GetLeftAlt() || pad->GetRightAlt();
+	const bool tab = pad->GetTabJustDown() && !alt;
+	const bool click = pad->GetLeftMouseJustUp();
+	const float x = Clamp(static_cast<float>(m_nMouseTempPosX), 0.0f, static_cast<float>(SCREEN_WIDTH));
+	const float y = Clamp(static_cast<float>(m_nMouseTempPosY), 0.0f, static_cast<float>(SCREEN_HEIGHT));
+	if(!view.open) {
+		if(!tab && !(click && ModShortcutHit(x, y))) return false;
+		RefreshModView(true);
+		view.open = true;
+		view.first = view.selected = 0;
+		view.pressedRow = -1;
+		view.dragging = false;
+		view.notice = ModMenuView::None;
+		m_bShowMouse = click;
+		m_nHoverOption = HOVEROPTION_NOT_HOVERING;
+		DMAudio.PlayFrontEndSound(SOUND_FRONTEND_ENTER_OR_ADJUST, 0);
+		return true;
+	}
+
+	const bool moved = x != m_nMousePosX || y != m_nMousePosY;
+	m_nMouseOldPosX = m_nMousePosX;
+	m_nMouseOldPosY = m_nMousePosY;
+	m_nMousePosX = static_cast<int32>(x);
+	m_nMousePosY = static_cast<int32>(y);
+	const bool press = pad->GetLeftMouseJustDown();
+	if(moved || press || click) m_bShowMouse = true;
+
+	auto close = [&]() {
+		view.open = false;
+		view.dragging = false;
+		view.pressedRow = -1;
+		DMAudio.PlayFrontEndSound(SOUND_FRONTEND_BACK, 0);
+	};
+	if(tab || pad->GetEscapeJustDown() || pad->GetBackJustDown()) {
+		close();
+		return true;
+	}
+
+	const int count = static_cast<int>(view.snapshot.entries.size());
+	const int previous = view.selected;
+	const bool wheelUp = pad->GetMouseWheelUpJustDown();
+	const bool wheelDown = pad->GetMouseWheelDownJustDown();
+	if(wheelUp || wheelDown) {
+		m_bShowMouse = true;
+		ScrollModRows(view, view.first + (wheelUp ? -1 : 1), count);
+	}
+
+	if(count > ModRowsVisible) {
+		const auto bar = ModScrollGeometry(count, view.first);
+		if(press && ModHit(x, y, ModX(ModBarLeft - 2), bar.top, ModX(ModBarRight + 2), bar.bottom)) {
+			view.pressedRow = -1;
+			if(y >= bar.thumbTop && y < bar.thumbBottom) {
+				view.dragging = true;
+				view.dragOffset = y - bar.thumbTop;
+			} else {
+				ScrollModRows(view, view.first + (y < bar.thumbTop ? -ModRowsVisible : ModRowsVisible), count);
+			}
+			return true;
+		}
+		if(view.dragging) {
+			const float travel = bar.bottom - bar.top - (bar.thumbBottom - bar.thumbTop);
+			if(pad->GetLeftMouse() && travel > 0.0f) {
+				const float offset = Clamp(y - view.dragOffset - bar.top, 0.0f, travel);
+				ScrollModRows(view, static_cast<int>(offset / travel * (count - ModRowsVisible) + 0.5f), count);
+			} else {
+				view.dragging = false;
+			}
+			return true;
+		}
+	}
+
+	int hover = -1;
+	if(ModHit(x, y, ModX(241.0f), ModY(ModBackTop), ModX(401.0f), ModY(ModBackBottom))) {
+		hover = count;
+	} else if(ModHit(x, y, ModX(ModLeft), ModY(ModRowsTop), ModX(ModRight), ModY(ModRowsTop + ModRowsVisible * ModRowHeight))) {
+		const int row = view.first + static_cast<int>((y - ModY(ModRowsTop)) / ModY(ModRowHeight));
+		if(row < count) hover = row;
+	}
+	if(hover >= 0 && (moved || press || click || wheelUp || wheelDown)) view.selected = hover;
+	if(press) view.pressedRow = hover;
+
+	int next = view.selected;
+	if(pad->GetUpJustDown() || pad->GetDPadUpJustDown()) next = next > 0 ? next - 1 : count;
+	else if(pad->GetDownJustDown() || pad->GetDPadDownJustDown()) next = next < count ? next + 1 : 0;
+	else if(pad->GetPageUpJustDown()) next = Max(0, next - ModRowsVisible);
+	else if(pad->GetPageDownJustDown()) next = Min(count, next + ModRowsVisible);
+	else if(pad->GetHomeJustDown()) next = 0;
+	else if(pad->GetEndJustDown()) next = count;
+	if(next != view.selected) {
+		m_bShowMouse = false;
+		view.pressedRow = -1;
+		SelectModRow(view, next, count);
+	}
+	if(view.selected != previous) DMAudio.PlayFrontEndSound(SOUND_FRONTEND_HIGHLIGHT_OPTION, 0);
+
+	const bool clicked = click && hover >= 0 && hover == view.pressedRow;
+	if(click) view.pressedRow = -1;
+	const bool accept = !alt && (pad->GetEnterJustDown() || pad->GetCrossJustDown() || pad->GetCharJustDown(' '));
+	const bool left = pad->GetLeftJustDown() || pad->GetDPadLeftJustDown();
+	const bool right = pad->GetRightJustDown() || pad->GetDPadRightJustDown();
+	if(accept || clicked || left || right) {
+		if(!clicked) m_bShowMouse = false;
+		if(view.selected == count) {
+			if(accept || clicked) close();
+		} else {
+			const auto entry = view.snapshot.entries[view.selected];
+			const bool enabled = accept || clicked ? !entry.enabled : right;
+			if(!entry.canToggle) {
+				view.notice = ModMenuView::ReadOnly;
+				DMAudio.PlayFrontEndSound(SOUND_FRONTEND_FAIL, 0);
+			} else if(enabled != entry.enabled) {
+				if(ModMenu::SetEnabled(entry, enabled)) {
+					view.notice = ModMenuView::None;
+					RefreshModView(true);
+					const auto &rows = view.snapshot.entries;
+					const auto found = std::find_if(rows.begin(), rows.end(), [&](const ModMenu::Entry &row) {
+						return row.kind == entry.kind && row.id == entry.id;
+					});
+					SelectModRow(view, found == rows.end() ? view.selected : static_cast<int>(found - rows.begin()), static_cast<int>(rows.size()));
+					DMAudio.PlayFrontEndSound(SOUND_FRONTEND_ENTER_OR_ADJUST, 0);
+				} else {
+					view.notice = ModMenuView::SaveFailed;
+					DMAudio.PlayFrontEndSound(SOUND_FRONTEND_FAIL, 0);
+				}
+			}
+		}
+	}
+	return true;
+}
+#endif
+
 void
 CMenuManager::DrawFrontEnd()
 {
@@ -2963,6 +3363,15 @@ CMenuManager::DrawBackground(bool transitionCall)
 		}
 	}
 
+#if defined(MODLOADER) || defined(REVC_LEGACY_ASI)
+	if(IsModMenuScreen()) {
+		if(ModsView().open) DrawModMenu();
+		else {
+			DrawStandardMenus(true);
+			DrawModMenuShortcut();
+		}
+	} else
+#endif
 	switch(m_nCurrScreen) {
 	case MENUPAGE_SKIN_SELECT: DrawPlayerSetupScreen(true); break;
 #ifdef IMPROVED_MENU_AND_INPUT
@@ -4947,6 +5356,9 @@ CMenuManager::UserInput(void)
 	int8 changeValueBy;
 
 	if(!m_AllowNavigation && m_firstStartCounter == 255) m_AllowNavigation = true;
+#if defined(MODLOADER) || defined(REVC_LEGACY_ASI)
+	if(ProcessModMenuInput()) return;
+#endif
 	if(!m_bShowMouse && m_nCurrScreen != MENUPAGE_MAP && (m_nMouseOldPosX != m_nMousePosX || m_nMouseOldPosY != m_nMousePosY)) { m_bShowMouse = true; }
 
 	static int oldOption = -99;

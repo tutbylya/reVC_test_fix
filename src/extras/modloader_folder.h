@@ -1,8 +1,11 @@
 #pragma once
 
+#include "mod_menu_state.h"
+
 #include <cstdint>
 #include <map>
 #include <string>
+#include <vector>
 
 namespace ModLoaderFolder {
 
@@ -11,6 +14,7 @@ struct File {
     std::string relative;   // Path relative to the owning mod directory.
     uint64_t size = 0;
     int priority = 50;
+    std::size_t menuRow = 0; // Owning startup row, even for case-colliding names.
 };
 
 class Index {
@@ -23,6 +27,8 @@ public:
     // Missing resources, traversal requests and symlink replacements are rejected.
     const char* Resolve(const char* request) const;
     const std::map<std::string, File>& FilesByName() const { return filesByName_; }
+    bool GetMenuRows(std::vector<ModMenu::ResourceRow>& rows) const;
+    bool SetMenuEnabled(const std::string& id, bool enabled) const;
     void Clear();
 
 private:
@@ -30,6 +36,7 @@ private:
     std::string modloaderRoot_;
     std::map<std::string, File> filesByPath_;
     std::map<std::string, File> filesByName_;
+    std::vector<ModMenu::ResourceRow> menuRows_;
 };
 
 } // namespace ModLoaderFolder

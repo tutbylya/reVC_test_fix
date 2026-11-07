@@ -75,13 +75,15 @@ function Set-Manifest([string]$Directory, [string]$Contents) {
     [IO.File]::WriteAllText((Join-Path $Directory 'legacy-asi\enabled.ini'), $Contents, $taskUtf8)
 }
 
-function Test-LoaderCase([string]$Directory, [bool]$Success, [int]$Count = 0, [bool]$Execution = $false) {
+function Test-LoaderCase([string]$Directory, [bool]$Success, [int]$Count = 0, [bool]$Execution = $false, [bool]$CheckMenu = $false) {
     $taskBefore = @{}
     foreach ($taskFile in Get-ChildItem -LiteralPath (Join-Path $Directory 'legacy-asi') -Filter '*.asi' -File) {
         $taskBefore[$taskFile.Name] = (Get-FileHash -LiteralPath $taskFile.FullName -Algorithm SHA256).Hash
     }
     Write-Host ("Testing {0}" -f (Split-Path -Leaf $Directory))
-    & (Join-Path $taskOutput 'loader_tests.exe') $Directory ([int]$Success) $Count ([int]$Execution)
+    $arguments = @($Directory, [int]$Success, $Count, [int]$Execution)
+    if ($CheckMenu) { $arguments += 'menu' }
+    & (Join-Path $taskOutput 'loader_tests.exe') @arguments
     if ($LASTEXITCODE -ne 0) {
         $taskCaseRecords.Add([PSCustomObject]@{ Case = (Split-Path -Leaf $Directory); ExpectedSuccess = $Success; ExpectedCount = $Count; ExpectedExecution = $Execution; Passed = $false; ExitCode = $LASTEXITCODE })
         Save-LoaderReport
@@ -164,6 +166,17 @@ foreach ($taskPeCase in @('wrong-architecture', 'not-a-dll', 'truncated-pe')) {
 
 $taskCase = New-LoaderCase 'valid-first-bad-second' -Second
 Set-Manifest $taskCase "[Modules]`nfixture_one.asi=$taskHashOne`nfixture_two.asi=$('0' * 64)`n"
+Test-LoaderCase $taskCase $false
+
+$taskCase = New-LoaderCase 'menu-disabled-fixture'
+Set-Manifest $taskCase "[Modules]`nfixture_one.asi=$taskHashOne`n"
+$taskId = [BitConverter]::ToString([Text.Encoding]::UTF8.GetBytes('fixture_one.asi')).Replace('-', '').ToLowerInvariant()
+[IO.File]::WriteAllText((Join-Path $taskCase 'legacy-asi\.revc-disabled'), "$taskId`n", $taskUtf8)
+Test-LoaderCase $taskCase $true 0 $false $true
+
+$taskCase = New-LoaderCase 'malformed-menu-state'
+Set-Manifest $taskCase "[Modules]`nfixture_one.asi=$taskHashOne`n"
+[IO.File]::WriteAllText((Join-Path $taskCase 'legacy-asi\.revc-disabled'), "not hexadecimal`n", $taskUtf8)
 Test-LoaderCase $taskCase $false
 
 $taskCase = New-LoaderCase 'single-fixture'
